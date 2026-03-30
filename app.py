@@ -222,6 +222,7 @@ def get_weather():
 # ══════════════════════════════════════
 # TRAM — GTFS-RT TAM Montpellier
 # Flux protobuf officiel, sans clé API
+# 2 arrêts surveillés : Albert 1er + Louis Blanc
 # ══════════════════════════════════════
 TAM_COLORS = {
     "1": "#009FE3",
@@ -235,19 +236,28 @@ TAM_COLORS = {
     "9": "#6DBEAA",
 }
 
-# Flux GTFS-RT TripUpdates — essayé dans l'ordre, premier qui répond gagne
+# Flux GTFS-RT TripUpdates — essayé dans l'ordre
 GTFS_RT_URLS = [
-    # Proxy transport.data.gouv.fr (IP publique, pas de blocage datacenter)
     "https://proxy.transport.data.gouv.fr/resource/tam-montpellier-gtfs-rt-trip-updates",
-    # Source directe TAM (peut être bloquée sur certains hébergeurs)
     "https://data.montpellier3m.fr/GTFS/Urbain/TripUpdate.pb",
 ]
 
-# IDs des arrêts physiques Albert 1er (stop_id dans le GTFS TAM)
-# Sens Mosson→Odysseum : 61512  |  Sens Odysseum→Mosson : 61513
-# On filtre par nom en fallback si les IDs changent
-ALBERT_STOP_IDS = {"61512", "61513", "61514", "61515"}
-ALBERT_STOP_NAME_PATTERN = "ALBERT"
+# Configuration des arrêts surveillés.
+# stop_ids : entiers courts utilisés dans le flux GTFS-RT TAM.
+# patterns : correspondance partielle sur stop_id textuel (fallback si IDs changent).
+# Les vrais IDs seront confirmés dans les logs après le premier déploiement.
+WATCHED_STOPS = [
+    {
+        "label":    "Albert 1er — Jardin des plantes",
+        "stop_ids": {"61512", "61513", "61514", "61515"},
+        "patterns": ["ALBERT"],
+    },
+    {
+        "label":    "Louis Blanc — Agora de la danse",
+        "stop_ids": {"61520", "61521", "61522", "61523"},
+        "patterns": ["LOUIS", "BLANC", "AGORA"],
+    },
+]
 
 def _fetch_gtfs_rt() -> bytes:
     """Télécharge le flux GTFS-RT en essayant plusieurs URLs."""
@@ -256,162 +266,141 @@ def _fetch_gtfs_rt() -> bytes:
         try:
             r = requests.get(url, headers=headers, timeout=10)
             r.raise_for_status()
-            if len(r.content) > 100:          # sanity check : pas un corps vide
+            if len(r.content) > 100:
                 logger.info("GTFS-RT récupéré depuis %s (%d bytes)", url, len(r.content))
                 return r.content
         except Exception as e:
             logger.warning("GTFS-RT indisponible (%s) : %s", url, e)
     raise RuntimeError("Aucune source GTFS-RT disponible")
 
+def _stop_matches(sid: str, stop_cfg: dict) -> bool:
+    """Vérifie si un stop_id correspond à un arrêt surveillé (ID exact ou pattern)."""
+    if sid in stop_cfg["stop_ids"]:
+        return True
+    sid_upper = sid.upper()
+    return any(p in sid_upper for p in stop_cfg["patterns"])
+
+def _parse_passages(feed, now) -> list:
+    """Extrait tous les passages à venir pour les arrêts surveillés."""
+    passages = []
+    all_ids_seen = set()  # pour diagnostic
+
+    for entity in feed.entity:
+        if not entity.HasField("trip_update"):
+            continue
+        tu       = entity.trip_update
+        route_id = tu.trip.route_id
+        headsign = getattr(tu.trip, "trip_headsign", "")
+
+        for stu in tu.stop_time_update:
+            sid = str(stu.stop_id)
+            all_ids_seen.add(sid)
+
+            # Cherche quel arrêt surveillé correspond
+            matched_stop = None
+            for stop_cfg in WATCHED_STOPS:
+                if _stop_matches(sid, stop_cfg):
+                    matched_stop = stop_cfg
+                    break
+            if not matched_stop:
+                continue
+
+            # Heure de départ (ou arrivée si absent)
+            if stu.HasField("departure"):
+                ts, delay = stu.departure.time, stu.departure.delay
+            elif stu.HasField("arrival"):
+                ts, delay = stu.arrival.time, stu.arrival.delay
+            else:
+                continue
+
+            depart = datetime.fromtimestamp(ts)
+            if depart < now:
+                continue
+            diff = int((depart - now).total_seconds() / 60)
+            if diff > 60:
+                continue
+
+            line = route_id.lstrip("0") if route_id else "?"
+            dest = headsign.title() if headsign else "—"
+
+            passages.append({
+                "stop":      matched_stop["label"],
+                "line":      line,
+                "color":     TAM_COLORS.get(line, "#6B6560"),
+                "direction": dest,
+                "minutes":   diff,
+                "time":      depart.strftime("%H:%M"),
+                "realtime":  delay != 0,
+            })
+
+    return passages, all_ids_seen
+
 @app.route("/api/tram")
 @login_required
 def get_tram():
     try:
-        raw = _fetch_gtfs_rt()
-
+        raw  = _fetch_gtfs_rt()
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(raw)
+        now  = datetime.now()
 
-        now      = datetime.now()
-        passages = []
+        passages, all_ids = _parse_passages(feed, now)
 
-        for entity in feed.entity:
-            if not entity.HasField("trip_update"):
-                continue
-            tu        = entity.trip_update
-            route_id  = tu.trip.route_id          # ex: "1", "2" …
-            headsign  = getattr(tu.trip, "trip_headsign", "")
-
-            for stu in tu.stop_time_update:
-                sid = str(stu.stop_id)
-
-                # Filtrage : stop_id connu OU contient "ALBERT" dans stop_id textuel
-                match_id   = sid in ALBERT_STOP_IDS
-                match_name = ALBERT_STOP_NAME_PATTERN in sid.upper()
-
-                if not (match_id or match_name):
-                    continue
-
-                # Heure de départ (ou arrivée si départ absent)
-                if stu.HasField("departure"):
-                    ts = stu.departure.time
-                    delay = stu.departure.delay
-                elif stu.HasField("arrival"):
-                    ts = stu.arrival.time
-                    delay = stu.arrival.delay
-                else:
-                    continue
-
-                depart = datetime.fromtimestamp(ts)
-                if depart < now:
-                    continue
-
-                diff = int((depart - now).total_seconds() / 60)
-                if diff > 60:
-                    continue
-
-                line  = route_id.lstrip("0") if route_id else "?"
-                dest  = headsign.title() if headsign else "—"
-
-                passages.append({
-                    "line":     line,
-                    "color":    TAM_COLORS.get(line, "#6B6560"),
-                    "direction": dest,
-                    "minutes":  diff,
-                    "time":     depart.strftime("%H:%M"),
-                    "realtime": delay != 0,     # retard non nul = données TR
-                })
-
-        # Dédoublonner (même ligne+direction à la même minute)
-        seen = set()
-        unique = []
-        for p in sorted(passages, key=lambda x: x["minutes"]):
-            key = (p["line"], p["direction"], p["minutes"])
+        # Dédoublonner par (arrêt, ligne, direction, minute)
+        seen, unique = set(), []
+        for p in sorted(passages, key=lambda x: (x["stop"], x["minutes"])):
+            key = (p["stop"], p["line"], p["direction"], p["minutes"])
             if key not in seen:
                 seen.add(key)
                 unique.append(p)
 
         if not unique:
-            # Diagnostic : log tous les stop_ids du flux pour trouver Albert 1er
-            all_ids = set()
-            for entity in feed.entity:
-                if entity.HasField("trip_update"):
-                    for stu in entity.trip_update.stop_time_update:
-                        all_ids.add(str(stu.stop_id))
-            logger.warning("0 passage Albert. stop_ids dans le flux : %s", sorted(all_ids)[:80])
-            return jsonify({"error": "Aucun passage — stop_ids à corriger"}), 404
+            logger.warning(
+                "0 passage trouvé. Échantillon stop_ids flux : %s",
+                sorted(all_ids)[:80]
+            )
+            return jsonify({"error": "Aucun passage — stop_ids à ajuster"}), 404
 
-        return jsonify(unique[:6])
+        return jsonify(unique[:12])
 
     except RuntimeError as e:
-        logger.error("Tram : %s", e)
+        logger.error("Tram source : %s", e)
         return jsonify({"error": str(e)}), 503
     except Exception as e:
-        logger.error("Erreur tram inattendue : %s", e)
+        logger.error("Erreur tram : %s", e)
         return jsonify({"error": "Erreur interne"}), 500
-
-# ══════════════════════════════════════
-# TRAM DEBUG — à supprimer après diagnostic
-# ══════════════════════════════════════
-@app.route("/api/tram/debug")
-@login_required
-def debug_tram():
-    """
-    Route temporaire de diagnostic.
-    Retourne : accessibilité des sources, taille du flux, 
-    et les 30 premiers stop_ids trouvés dans le protobuf.
-    À supprimer une fois les stop_ids d'Albert 1er identifiés.
-    """
-    report = {"sources": [], "stop_ids_sample": [], "entity_count": 0}
-
-    for url in GTFS_RT_URLS:
-        entry = {"url": url, "status": None, "bytes": 0, "error": None}
-        try:
-            r = requests.get(url, timeout=10)
-            entry["status"] = r.status_code
-            entry["bytes"]  = len(r.content)
-            if r.status_code == 200 and len(r.content) > 100:
-                feed = gtfs_realtime_pb2.FeedMessage()
-                feed.ParseFromString(r.content)
-                report["entity_count"] = len(feed.entity)
-                stop_ids = set()
-                for entity in feed.entity:
-                    if entity.HasField("trip_update"):
-                        for stu in entity.trip_update.stop_time_update:
-                            stop_ids.add(str(stu.stop_id))
-                            if len(stop_ids) >= 50:
-                                break
-                    if len(stop_ids) >= 50:
-                        break
-                report["stop_ids_sample"] = sorted(stop_ids)[:50]
-                entry["parsed"] = True
-        except Exception as e:
-            entry["error"] = str(e)
-        report["sources"].append(entry)
-
-    # Cherche spécifiquement les stop_ids contenant "albert" (si textuels)
-    report["albert_stop_ids"] = [
-        sid for sid in report["stop_ids_sample"]
-        if "albert" in sid.lower()
-    ]
-    return jsonify(report)
 
 # ══════════════════════════════════════
 # ACTUALITÉS IA — Flux RSS natifs
 # ══════════════════════════════════════
+# Catégories : recherche, produits, réglementation/droit, éthique, business
 AI_FEEDS = {
+    # ── Recherche & technique ────────────────────────────────────
     "MIT Tech Review": {
         "url":  "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",
         "icon": "🔬",
-    },
-    "The Verge": {
-        "url":  "https://www.theverge.com/rss/index.xml",
-        "icon": "⚡",
     },
     "Hugging Face": {
         "url":  "https://huggingface.co/blog/feed.xml",
         "icon": "🤗",
     },
+    "DeepMind": {
+        "url":  "https://deepmind.google/blog/rss.xml",
+        "icon": "🧬",
+    },
+    "Google AI": {
+        "url":  "https://blog.research.google/feeds/posts/default?alt=rss",
+        "icon": "🔵",
+    },
+    "Meta AI": {
+        "url":  "https://ai.meta.com/blog/rss/",
+        "icon": "🟦",
+    },
+    "Papers With Code": {
+        "url":  "https://paperswithcode.com/latest.rss",
+        "icon": "📄",
+    },
+    # ── Labs & modèles ───────────────────────────────────────────
     "Anthropic": {
         "url":  "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_claude.xml",
         "icon": "🧠",
@@ -420,9 +409,80 @@ AI_FEEDS = {
         "url":  "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_openai_research.xml",
         "icon": "✦",
     },
+    "Mistral AI": {
+        "url":  "https://mistral.ai/news/rss.xml",
+        "icon": "💨",
+    },
+    "Cohere": {
+        "url":  "https://cohere.com/blog/rss",
+        "icon": "🔷",
+    },
+    # ── Actualités tech & IA ─────────────────────────────────────
+    "The Verge AI": {
+        "url":  "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+        "icon": "⚡",
+    },
     "VentureBeat IA": {
         "url":  "https://venturebeat.com/category/ai/feed/",
         "icon": "📡",
+    },
+    "Wired AI": {
+        "url":  "https://www.wired.com/feed/tag/artificial-intelligence/latest/rss",
+        "icon": "🌐",
+    },
+    "TechCrunch AI": {
+        "url":  "https://techcrunch.com/category/artificial-intelligence/feed/",
+        "icon": "🚀",
+    },
+    "Ars Technica AI": {
+        "url":  "https://feeds.arstechnica.com/arstechnica/technology-lab",
+        "icon": "🖥",
+    },
+    "Import AI": {
+        "url":  "https://importai.substack.com/feed",
+        "icon": "📨",
+    },
+    "The Batch (DeepLearning.AI)": {
+        "url":  "https://read.deeplearning.ai/the-batch/rss/",
+        "icon": "📦",
+    },
+    # ── Réglementation, droit & politique ────────────────────────
+    "AI Policy (Future of Life)": {
+        "url":  "https://futureoflife.org/feed/",
+        "icon": "⚖️",
+    },
+    "European Parliament AI": {
+        "url":  "https://www.europarl.europa.eu/rss/doc/news-articles/en.rss",
+        "icon": "🇪🇺",
+    },
+    "CNIL": {
+        "url":  "https://www.cnil.fr/fr/rss.xml",
+        "icon": "🛡",
+    },
+    "AI Now Institute": {
+        "url":  "https://ainowinstitute.org/feed",
+        "icon": "📜",
+    },
+    "Stanford HAI": {
+        "url":  "https://hai.stanford.edu/news/rss.xml",
+        "icon": "🏛",
+    },
+    "Brookings AI": {
+        "url":  "https://www.brookings.edu/topic/artificial-intelligence/feed/",
+        "icon": "🏦",
+    },
+    # ── Éthique & société ────────────────────────────────────────
+    "AlgorithmWatch": {
+        "url":  "https://algorithmwatch.org/en/feed/",
+        "icon": "🔍",
+    },
+    "Partnership on AI": {
+        "url":  "https://partnershiponai.org/feed/",
+        "icon": "🤝",
+    },
+    "Mozilla Foundation AI": {
+        "url":  "https://foundation.mozilla.org/en/feed/blog/",
+        "icon": "🦊",
     },
 }
 
