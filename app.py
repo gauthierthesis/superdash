@@ -1,0 +1,393 @@
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for
+from dotenv import load_dotenv
+from functools import wraps
+import json, os, csv, io, re, feedparser, requests
+from datetime import datetime, timedelta
+import logging
+
+load_dotenv()
+
+# ══════════════════════════════════════
+# CONFIGURATION
+# ══════════════════════════════════════
+app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "changez-cette-cle-svp")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+
+# Logging structuré pour Render
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Chemins des fichiers de données
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR    = os.path.join(BASE_DIR, "data")
+TODOS_FILE  = os.path.join(DATA_DIR, "todos.json")
+EVENTS_FILE = os.path.join(DATA_DIR, "events.json")
+
+# Création automatique du dossier data au démarrage
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# ══════════════════════════════════════
+# HELPERS GÉNÉRIQUES
+# ══════════════════════════════════════
+def load_json(path: str, default=None):
+    """Charge un fichier JSON, retourne default si absent ou invalide."""
+    if default is None:
+        default = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+def save_json(path: str, data):
+    """Sauvegarde data en JSON (crée le dossier si nécessaire)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# ══════════════════════════════════════
+# AUTHENTIFICATION
+# ══════════════════════════════════════
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not DASHBOARD_PASSWORD or session.get("logged_in"):
+            return f(*args, **kwargs)
+        return redirect(url_for("login"))
+    return decorated
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        if request.form.get("password") == DASHBOARD_PASSWORD:
+            session["logged_in"] = True
+            return redirect(url_for("index"))
+        error = "Mot de passe incorrect"
+    return render_template("login.html", error=error)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+# ══════════════════════════════════════
+# PAGE PRINCIPALE
+# ══════════════════════════════════════
+@app.route("/")
+@login_required
+def index():
+    return render_template("index.html")
+
+# ══════════════════════════════════════
+# TODO LIST
+# ══════════════════════════════════════
+@app.route("/api/todos", methods=["GET"])
+@login_required
+def get_todos():
+    return jsonify(load_json(TODOS_FILE))
+
+@app.route("/api/todos", methods=["POST"])
+@login_required
+def save_todos():
+    todos = request.get_json()
+    if not isinstance(todos, list):
+        return jsonify({"error": "Format invalide"}), 400
+    save_json(TODOS_FILE, todos)
+    return jsonify({"status": "ok"})
+
+# ══════════════════════════════════════
+# CALENDRIER LOCAL
+# ══════════════════════════════════════
+@app.route("/api/events", methods=["GET"])
+@login_required
+def get_events():
+    try:
+        events  = load_json(EVENTS_FILE)
+        now     = datetime.now()
+        upcoming = []
+        for e in events:
+            try:
+                dt = datetime.fromisoformat(e["date"])
+                if dt < now:
+                    continue
+                date_str = (
+                    dt.strftime("%d %b")
+                    if (dt.hour == 0 and dt.minute == 0)
+                    else dt.strftime("%d %b à %H:%M")
+                )
+                upcoming.append({
+                    "id":    e.get("id", ""),
+                    "title": e["title"],
+                    "date":  date_str,
+                    "raw":   e["date"],
+                })
+            except (KeyError, ValueError):
+                continue
+        upcoming.sort(key=lambda x: x["raw"])
+        return jsonify(upcoming[:8])
+    except Exception as e:
+        logger.error("Erreur events : %s", e)
+        return jsonify([])
+
+@app.route("/api/events", methods=["POST"])
+@login_required
+def add_event():
+    try:
+        data  = request.get_json()
+        title = data.get("title", "").strip()
+        date  = data.get("date", "").strip()
+        if not title or not date:
+            return jsonify({"error": "title et date sont requis"}), 400
+        datetime.fromisoformat(date)  # valide le format
+        events = load_json(EVENTS_FILE)
+        events.append({
+            "id":    str(datetime.now().timestamp()),
+            "title": title,
+            "date":  date,
+        })
+        save_json(EVENTS_FILE, events)
+        return jsonify({"status": "ok"})
+    except ValueError:
+        return jsonify({"error": "Format de date invalide (ISO 8601 attendu)"}), 400
+    except Exception as e:
+        logger.error("Erreur add_event : %s", e)
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/events/<event_id>", methods=["DELETE"])
+@login_required
+def delete_event(event_id):
+    try:
+        events = [e for e in load_json(EVENTS_FILE) if e.get("id") != event_id]
+        save_json(EVENTS_FILE, events)
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        logger.error("Erreur delete_event : %s", e)
+        return jsonify({"error": str(e)}), 500
+
+# ══════════════════════════════════════
+# MÉTÉO — Open-Meteo (gratuit, sans clé)
+# ══════════════════════════════════════
+@app.route("/api/weather")
+@login_required
+def get_weather():
+    try:
+        res = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude":      43.6108,
+                "longitude":     3.8767,
+                "current":       "temperature_2m,weathercode,windspeed_10m,relativehumidity_2m,apparent_temperature",
+                "daily":         "weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum",
+                "timezone":      "Europe/Paris",
+                "forecast_days": 5,
+            },
+            timeout=10,
+        )
+        res.raise_for_status()
+        data    = res.json()
+        current = data.get("current", {})
+        daily   = data.get("daily", {})
+        days_fr = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+        forecast = []
+        for i in range(min(5, len(daily.get("time", [])))):
+            dt = datetime.fromisoformat(daily["time"][i])
+            forecast.append({
+                "day":  "Auj." if i == 0 else days_fr[dt.weekday()],
+                "code": daily["weathercode"][i],
+                "max":  round(daily["temperature_2m_max"][i]),
+                "min":  round(daily["temperature_2m_min"][i]),
+                "rain": round(daily.get("precipitation_sum", [0] * 5)[i], 1),
+            })
+        return jsonify({
+            "temp":       round(current.get("temperature_2m", 0)),
+            "feels_like": round(current.get("apparent_temperature", 0)),
+            "code":       current.get("weathercode", 0),
+            "wind":       round(current.get("windspeed_10m", 0)),
+            "humidity":   round(current.get("relativehumidity_2m", 0)),
+            "forecast":   forecast,
+        })
+    except requests.RequestException as e:
+        logger.error("Erreur météo (réseau) : %s", e)
+        return jsonify({"error": "Service météo indisponible"}), 503
+    except Exception as e:
+        logger.error("Erreur météo : %s", e)
+        return jsonify({}), 500
+
+# ══════════════════════════════════════
+# TRAM — CSV TAM Montpellier
+# ══════════════════════════════════════
+TAM_COLORS = {
+    "1": "#009FE3",
+    "2": "#E2001A",
+    "3": "#00A550",
+    "4": "#8B5CA5",
+    "5": "#F39200",
+    "6": "#E5007D",
+    "7": "#B2C800",
+    "8": "#009FE3",
+    "9": "#6DBEAA",
+}
+
+TAM_CSV_URL = (
+    "https://data.montpellier3m.fr/sites/default/files/ressources/TAM_MMM_TpsReel.csv"
+)
+
+@app.route("/api/tram")
+@login_required
+def get_tram():
+    try:
+        res = requests.get(TAM_CSV_URL, timeout=10)
+        res.raise_for_status()
+        res.encoding = "utf-8"
+        reader   = csv.DictReader(io.StringIO(res.text), delimiter=";")
+        passages = []
+        now      = datetime.now()
+
+        for row in reader:
+            if "ALBERT" not in row.get("stop_name", "").upper():
+                continue
+            heure_str    = row.get("departure_time", "").strip()
+            is_theorical = row.get("is_theorical", "1")
+            ligne        = row.get("route_short_name", "?").strip()
+            dest         = row.get("trip_headsign", "").strip().title()
+            try:
+                delay_sec = int(row.get("delay_sec", 0) or 0)
+            except ValueError:
+                delay_sec = 0
+            try:
+                parts      = heure_str.split(":")
+                h, m, s    = int(parts[0]), int(parts[1]), int(parts[2])
+                extra_days = h // 24
+                h          = h % 24
+                depart = now.replace(hour=h, minute=m, second=s, microsecond=0)
+                depart += timedelta(days=extra_days, seconds=delay_sec)
+                if depart < now:
+                    continue
+                diff = int((depart - now).total_seconds() / 60)
+                if diff > 60:
+                    continue
+                passages.append({
+                    "line":      ligne,
+                    "color":     TAM_COLORS.get(ligne, "#6B6560"),
+                    "direction": dest,
+                    "minutes":   diff,
+                    "time":      depart.strftime("%H:%M"),
+                    "realtime":  is_theorical == "0",
+                })
+            except (ValueError, IndexError):
+                continue
+
+        passages.sort(key=lambda x: x["minutes"])
+        return jsonify(passages[:6])
+    except requests.RequestException as e:
+        logger.error("Erreur tram (réseau) : %s", e)
+        return jsonify({"error": "Service TAM indisponible"}), 503
+    except Exception as e:
+        logger.error("Erreur tram : %s", e)
+        return jsonify([])
+
+# ══════════════════════════════════════
+# ACTUALITÉS IA — Flux RSS natifs
+# ══════════════════════════════════════
+AI_FEEDS = {
+    "MIT Tech Review": {
+        "url":  "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",
+        "icon": "🔬",
+    },
+    "The Verge": {
+        "url":  "https://www.theverge.com/rss/index.xml",
+        "icon": "⚡",
+    },
+    "Hugging Face": {
+        "url":  "https://huggingface.co/blog/feed.xml",
+        "icon": "🤗",
+    },
+    "Anthropic": {
+        "url":  "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_claude.xml",
+        "icon": "🧠",
+    },
+    "OpenAI": {
+        "url":  "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_openai_research.xml",
+        "icon": "✦",
+    },
+    "VentureBeat IA": {
+        "url":  "https://venturebeat.com/category/ai/feed/",
+        "icon": "📡",
+    },
+}
+
+RSS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
+@app.route("/api/news")
+@login_required
+def get_news():
+    articles = []
+    now      = datetime.now()
+
+    for source, meta in AI_FEEDS.items():
+        try:
+            res  = requests.get(meta["url"], headers=RSS_HEADERS, timeout=8)
+            feed = feedparser.parse(res.text)
+            for entry in feed.entries[:2]:
+                published = entry.get("published_parsed") or entry.get("updated_parsed")
+                if published:
+                    dt   = datetime(*published[:6])
+                    diff = now - dt
+                    if diff.days > 7:
+                        continue
+                    if diff.days > 0:
+                        time_str = f"il y a {diff.days}j"
+                    elif diff.seconds > 3600:
+                        time_str = f"il y a {diff.seconds // 3600}h"
+                    else:
+                        time_str = f"il y a {diff.seconds // 60}min"
+                else:
+                    time_str = ""
+                    dt = now
+
+                title   = entry.get("title", "Sans titre")
+                summary = re.sub(r"<[^>]+>", "", entry.get("summary", ""))[:160]
+
+                articles.append({
+                    "source":  source,
+                    "icon":    meta["icon"],
+                    "title":   title,
+                    "summary": summary,
+                    "time":    time_str,
+                    "link":    entry.get("link", ""),
+                    "_dt":     dt.isoformat(),
+                })
+        except Exception as e:
+            logger.warning("Erreur flux %s : %s", source, e)
+            continue
+
+    articles.sort(key=lambda x: x.pop("_dt", ""), reverse=True)
+    return jsonify(articles[:12])
+
+# Alias rétrocompatibilité
+@app.route("/api/twitter")
+@login_required
+def get_twitter():
+    return get_news()
+
+# ══════════════════════════════════════
+# POINT D'ENTRÉE (dev local uniquement)
+# ══════════════════════════════════════
+if __name__ == "__main__":
+    debug_mode = os.getenv("DEBUG", "false").lower() == "true"
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 5000)),
+        debug=debug_mode
+    )

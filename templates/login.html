@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard — Connexion</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #F7F4EF;
+      --border: #E2DDD6;
+      --text-primary: #1A1714;
+      --text-muted: #A09A94;
+      --accent: #E85D26;
+      --font-display: 'Playfair Display', Georgia, serif;
+      --font-body: 'DM Sans', sans-serif;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: var(--bg);
+      font-family: var(--font-body);
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .login-box {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 40px 36px;
+      width: 360px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.06);
+    }
+    .login-title {
+      font-family: var(--font-display);
+      font-size: 24px; font-weight: 900;
+      letter-spacing: -0.5px;
+      margin-bottom: 4px;
+    }
+    .login-subtitle {
+      font-size: 12px; color: var(--text-muted);
+      letter-spacing: 2px; text-transform: uppercase;
+      margin-bottom: 32px;
+    }
+    .field { margin-bottom: 16px; }
+    .field label {
+      display: block; font-size: 10px;
+      color: var(--text-muted); margin-bottom: 6px;
+      letter-spacing: 1.5px; text-transform: uppercase;
+    }
+    .field input {
+      width: 100%; border: 1px solid var(--border);
+      border-radius: 7px; padding: 10px 14px;
+      font-family: var(--font-body); font-size: 14px;
+      color: var(--text-primary); outline: none;
+      transition: border-color 0.15s;
+    }
+    .field input:focus { border-color: var(--text-primary); }
+    .error {
+      background: #FDF0EB; border: 1px solid var(--accent);
+      border-radius: 6px; padding: 8px 12px;
+      font-size: 12px; color: var(--accent);
+      margin-bottom: 16px;
+    }
+    .btn-login {
+      width: 100%; background: var(--text-primary);
+      color: white; border: none; border-radius: 7px;
+      padding: 11px; font-family: var(--font-body);
+      font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: background 0.15s;
+      margin-top: 8px;
+    }
+    .btn-login:hover { background: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <div class="login-title">MON DASHBOARD</div>
+    <div class="login-subtitle">Se connecter</div>
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+      <div class="field">
+        <label>Mot de passe</label>
+        <input type="password" name="password" placeholder="••••••••" autofocus />
+      </div>
+      <button type="submit" class="btn-login">Accéder au dashboard</button>
+    </form>
+  </div>
+</body>
+</html>
