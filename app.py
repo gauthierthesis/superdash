@@ -4,6 +4,7 @@ from functools import wraps
 import json, os, csv, io, re, feedparser, requests
 from datetime import datetime, timedelta
 import logging
+from google.transit import gtfs_realtime_pb2
 
 load_dotenv()
 
@@ -219,7 +220,8 @@ def get_weather():
         return jsonify({}), 500
 
 # ══════════════════════════════════════
-# TRAM — CSV TAM Montpellier
+# TRAM — GTFS-RT TAM Montpellier
+# Flux protobuf officiel, sans clé API
 # ══════════════════════════════════════
 TAM_COLORS = {
     "1": "#009FE3",
@@ -233,63 +235,114 @@ TAM_COLORS = {
     "9": "#6DBEAA",
 }
 
-TAM_CSV_URL = (
-    "https://data.montpellier3m.fr/sites/default/files/ressources/TAM_MMM_TpsReel.csv"
-)
+# Flux GTFS-RT TripUpdates — essayé dans l'ordre, premier qui répond gagne
+GTFS_RT_URLS = [
+    # Proxy transport.data.gouv.fr (IP publique, pas de blocage datacenter)
+    "https://proxy.transport.data.gouv.fr/resource/tam-montpellier-gtfs-rt-trip-updates",
+    # Source directe TAM (peut être bloquée sur certains hébergeurs)
+    "https://data.montpellier3m.fr/GTFS/Urbain/TripUpdate.pb",
+]
+
+# IDs des arrêts physiques Albert 1er (stop_id dans le GTFS TAM)
+# Sens Mosson→Odysseum : 61512  |  Sens Odysseum→Mosson : 61513
+# On filtre par nom en fallback si les IDs changent
+ALBERT_STOP_IDS = {"61512", "61513", "61514", "61515"}
+ALBERT_STOP_NAME_PATTERN = "ALBERT"
+
+def _fetch_gtfs_rt() -> bytes:
+    """Télécharge le flux GTFS-RT en essayant plusieurs URLs."""
+    headers = {"User-Agent": "Mozilla/5.0 (dashboard/1.0)"}
+    for url in GTFS_RT_URLS:
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            r.raise_for_status()
+            if len(r.content) > 100:          # sanity check : pas un corps vide
+                logger.info("GTFS-RT récupéré depuis %s (%d bytes)", url, len(r.content))
+                return r.content
+        except Exception as e:
+            logger.warning("GTFS-RT indisponible (%s) : %s", url, e)
+    raise RuntimeError("Aucune source GTFS-RT disponible")
 
 @app.route("/api/tram")
 @login_required
 def get_tram():
     try:
-        res = requests.get(TAM_CSV_URL, timeout=10)
-        res.raise_for_status()
-        res.encoding = "utf-8"
-        reader   = csv.DictReader(io.StringIO(res.text), delimiter=";")
-        passages = []
-        now      = datetime.now()
+        raw = _fetch_gtfs_rt()
 
-        for row in reader:
-            if "ALBERT" not in row.get("stop_name", "").upper():
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(raw)
+
+        now      = datetime.now()
+        passages = []
+
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
                 continue
-            heure_str    = row.get("departure_time", "").strip()
-            is_theorical = row.get("is_theorical", "1")
-            ligne        = row.get("route_short_name", "?").strip()
-            dest         = row.get("trip_headsign", "").strip().title()
-            try:
-                delay_sec = int(row.get("delay_sec", 0) or 0)
-            except ValueError:
-                delay_sec = 0
-            try:
-                parts      = heure_str.split(":")
-                h, m, s    = int(parts[0]), int(parts[1]), int(parts[2])
-                extra_days = h // 24
-                h          = h % 24
-                depart = now.replace(hour=h, minute=m, second=s, microsecond=0)
-                depart += timedelta(days=extra_days, seconds=delay_sec)
+            tu        = entity.trip_update
+            route_id  = tu.trip.route_id          # ex: "1", "2" …
+            headsign  = getattr(tu.trip, "trip_headsign", "")
+
+            for stu in tu.stop_time_update:
+                sid = str(stu.stop_id)
+
+                # Filtrage : stop_id connu OU contient "ALBERT" dans stop_id textuel
+                match_id   = sid in ALBERT_STOP_IDS
+                match_name = ALBERT_STOP_NAME_PATTERN in sid.upper()
+
+                if not (match_id or match_name):
+                    continue
+
+                # Heure de départ (ou arrivée si départ absent)
+                if stu.HasField("departure"):
+                    ts = stu.departure.time
+                    delay = stu.departure.delay
+                elif stu.HasField("arrival"):
+                    ts = stu.arrival.time
+                    delay = stu.arrival.delay
+                else:
+                    continue
+
+                depart = datetime.fromtimestamp(ts)
                 if depart < now:
                     continue
+
                 diff = int((depart - now).total_seconds() / 60)
                 if diff > 60:
                     continue
-                passages.append({
-                    "line":      ligne,
-                    "color":     TAM_COLORS.get(ligne, "#6B6560"),
-                    "direction": dest,
-                    "minutes":   diff,
-                    "time":      depart.strftime("%H:%M"),
-                    "realtime":  is_theorical == "0",
-                })
-            except (ValueError, IndexError):
-                continue
 
-        passages.sort(key=lambda x: x["minutes"])
-        return jsonify(passages[:6])
-    except requests.RequestException as e:
-        logger.error("Erreur tram (réseau) : %s", e)
-        return jsonify({"error": "Service TAM indisponible"}), 503
+                line  = route_id.lstrip("0") if route_id else "?"
+                dest  = headsign.title() if headsign else "—"
+
+                passages.append({
+                    "line":     line,
+                    "color":    TAM_COLORS.get(line, "#6B6560"),
+                    "direction": dest,
+                    "minutes":  diff,
+                    "time":     depart.strftime("%H:%M"),
+                    "realtime": delay != 0,     # retard non nul = données TR
+                })
+
+        # Dédoublonner (même ligne+direction à la même minute)
+        seen = set()
+        unique = []
+        for p in sorted(passages, key=lambda x: x["minutes"]):
+            key = (p["line"], p["direction"], p["minutes"])
+            if key not in seen:
+                seen.add(key)
+                unique.append(p)
+
+        if not unique:
+            logger.warning("GTFS-RT parsé mais 0 passage trouvé pour Albert 1er")
+            return jsonify({"error": "Aucun passage trouvé — vérifiez les stop_ids"}), 404
+
+        return jsonify(unique[:6])
+
+    except RuntimeError as e:
+        logger.error("Tram : %s", e)
+        return jsonify({"error": str(e)}), 503
     except Exception as e:
-        logger.error("Erreur tram : %s", e)
-        return jsonify([])
+        logger.error("Erreur tram inattendue : %s", e)
+        return jsonify({"error": "Erreur interne"}), 500
 
 # ══════════════════════════════════════
 # ACTUALITÉS IA — Flux RSS natifs
