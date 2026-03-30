@@ -1,0 +1,34 @@
+syntax = "proto2";
+package transit_realtime;
+
+message FeedMessage {
+  required FeedHeader header = 1;
+  repeated FeedEntity entity = 2;
+}
+message FeedHeader {
+  required string gtfs_realtime_version = 1;
+  optional uint64 timestamp = 2;
+}
+message FeedEntity {
+  required string id = 1;
+  optional TripUpdate trip_update = 3;
+}
+message TripUpdate {
+  required TripDescriptor trip = 1;
+  repeated StopTimeUpdate stop_time_update = 2;
+}
+message TripDescriptor {
+  optional string trip_id = 1;
+  optional string route_id = 5;
+  optional string trip_headsign = 6;
+}
+message StopTimeUpdate {
+  optional uint32 stop_sequence = 1;
+  optional string stop_id = 4;
+  optional StopTimeEvent arrival = 2;
+  optional StopTimeEvent departure = 3;
+}
+message StopTimeEvent {
+  optional int32 delay = 1;
+  optional int64 time = 2;
+}

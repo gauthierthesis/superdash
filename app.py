@@ -4,7 +4,7 @@ from functools import wraps
 import json, os, csv, io, re, feedparser, requests
 from datetime import datetime, timedelta
 import logging
-from google.transit import gtfs_realtime_pb2
+import gtfs_realtime_pb2  # généré localement depuis gtfs_realtime.proto
 
 load_dotenv()
 
