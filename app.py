@@ -332,8 +332,14 @@ def get_tram():
                 unique.append(p)
 
         if not unique:
-            logger.warning("GTFS-RT parsé mais 0 passage trouvé pour Albert 1er")
-            return jsonify({"error": "Aucun passage trouvé — vérifiez les stop_ids"}), 404
+            # Diagnostic : log tous les stop_ids du flux pour trouver Albert 1er
+            all_ids = set()
+            for entity in feed.entity:
+                if entity.HasField("trip_update"):
+                    for stu in entity.trip_update.stop_time_update:
+                        all_ids.add(str(stu.stop_id))
+            logger.warning("0 passage Albert. stop_ids dans le flux : %s", sorted(all_ids)[:80])
+            return jsonify({"error": "Aucun passage — stop_ids à corriger"}), 404
 
         return jsonify(unique[:6])
 
@@ -343,6 +349,52 @@ def get_tram():
     except Exception as e:
         logger.error("Erreur tram inattendue : %s", e)
         return jsonify({"error": "Erreur interne"}), 500
+
+# ══════════════════════════════════════
+# TRAM DEBUG — à supprimer après diagnostic
+# ══════════════════════════════════════
+@app.route("/api/tram/debug")
+@login_required
+def debug_tram():
+    """
+    Route temporaire de diagnostic.
+    Retourne : accessibilité des sources, taille du flux, 
+    et les 30 premiers stop_ids trouvés dans le protobuf.
+    À supprimer une fois les stop_ids d'Albert 1er identifiés.
+    """
+    report = {"sources": [], "stop_ids_sample": [], "entity_count": 0}
+
+    for url in GTFS_RT_URLS:
+        entry = {"url": url, "status": None, "bytes": 0, "error": None}
+        try:
+            r = requests.get(url, timeout=10)
+            entry["status"] = r.status_code
+            entry["bytes"]  = len(r.content)
+            if r.status_code == 200 and len(r.content) > 100:
+                feed = gtfs_realtime_pb2.FeedMessage()
+                feed.ParseFromString(r.content)
+                report["entity_count"] = len(feed.entity)
+                stop_ids = set()
+                for entity in feed.entity:
+                    if entity.HasField("trip_update"):
+                        for stu in entity.trip_update.stop_time_update:
+                            stop_ids.add(str(stu.stop_id))
+                            if len(stop_ids) >= 50:
+                                break
+                    if len(stop_ids) >= 50:
+                        break
+                report["stop_ids_sample"] = sorted(stop_ids)[:50]
+                entry["parsed"] = True
+        except Exception as e:
+            entry["error"] = str(e)
+        report["sources"].append(entry)
+
+    # Cherche spécifiquement les stop_ids contenant "albert" (si textuels)
+    report["albert_stop_ids"] = [
+        sid for sid in report["stop_ids_sample"]
+        if "albert" in sid.lower()
+    ]
+    return jsonify(report)
 
 # ══════════════════════════════════════
 # ACTUALITÉS IA — Flux RSS natifs
