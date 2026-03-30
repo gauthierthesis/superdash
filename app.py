@@ -246,16 +246,19 @@ GTFS_RT_URLS = [
 # stop_ids : entiers courts utilisés dans le flux GTFS-RT TAM.
 # patterns : correspondance partielle sur stop_id textuel (fallback si IDs changent).
 # Les vrais IDs seront confirmés dans les logs après le premier déploiement.
+# Stop IDs identifiés depuis les séquences réelles du flux GTFS-RT TAM
+# Ligne 1, sens Mosson→Odysseum : Albert=1195, Louis Blanc=1194
+# Ligne 1, sens Odysseum→Mosson : Albert=1222, Louis Blanc=1223
 WATCHED_STOPS = [
     {
         "label":    "Albert 1er — Jardin des plantes",
-        "stop_ids": {"61512", "61513", "61514", "61515"},
-        "patterns": ["ALBERT"],
+        "stop_ids": {"1195", "1222"},
+        "patterns": [],
     },
     {
         "label":    "Louis Blanc — Agora de la danse",
-        "stop_ids": {"61520", "61521", "61522", "61523"},
-        "patterns": ["LOUIS", "BLANC", "AGORA"],
+        "stop_ids": {"1194", "1223"},
+        "patterns": [],
     },
 ]
 
