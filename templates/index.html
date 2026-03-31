@@ -41,7 +41,14 @@
     .btn-config:hover{border-color:var(--violet);color:var(--violet);}
 
     /* ─── Grid ───────────────────────────────────── */
-    main{flex:1;display:grid;overflow:hidden;transition:grid-template-columns .3s,grid-template-rows .3s;}
+    main{flex:1;display:grid;overflow:hidden;transition:grid-template-columns .3s,grid-template-rows .3s;position:relative;}
+
+    /* ─── Séparateurs de grille redimensionnables ────── */
+    .grid-splitter{position:absolute;z-index:10;}
+    .col-splitter{cursor:col-resize;top:0;height:100%;width:8px;transform:translateX(-50%);}
+    .row-splitter{cursor:row-resize;left:0;width:100%;height:8px;transform:translateY(-50%);}
+    .col-splitter:hover::after,.col-splitter.dragging::after{content:'';position:absolute;left:50%;top:0;width:2px;height:100%;background:var(--violet);opacity:.45;transform:translateX(-50%);border-radius:1px;}
+    .row-splitter:hover::after,.row-splitter.dragging::after{content:'';position:absolute;top:50%;left:0;height:2px;width:100%;background:var(--violet);opacity:.45;transform:translateY(-50%);border-radius:1px;}
     main.layout-auto   {grid-template-columns:1fr 280px 260px;grid-template-rows:1fr 1fr 185px;}
     main.layout-news   {grid-template-columns:1.6fr 260px 240px;grid-template-rows:1fr 1fr 185px;}
     main.layout-todo   {grid-template-columns:320px 1fr 260px;grid-template-rows:1fr 1fr 145px;}
@@ -418,10 +425,14 @@ function resizeWidget(id,size){
   const p=loadPrefs(); p[id+'_size']=size; savePrefs(p); refreshConfigRows();
 }
 function setLayout(name){
-  document.getElementById('main-grid').className='layout-'+name;
-  const p=loadPrefs(); p['layout']=name; savePrefs(p);
+  const grid=document.getElementById('main-grid');
+  grid.className='layout-'+name;
+  grid.style.gridTemplateColumns='';
+  grid.style.gridTemplateRows='';
+  const p=loadPrefs(); p['layout']=name; delete p.gridCols; delete p.gridRows; savePrefs(p);
   document.querySelectorAll('.btn-layout').forEach(b=>b.classList.remove('active'));
   const b=document.getElementById('btn-layout-'+name); if(b)b.classList.add('active');
+  requestAnimationFrame(()=>{ if(window._positionGridSplitters)window._positionGridSplitters(); });
 }
 
 // Boutons rapides header
@@ -467,6 +478,78 @@ function refreshConfigRows(){
 })();
 document.getElementById('config-panel').addEventListener('click',function(e){if(e.target===this)closeConfig();});
 
+// ── Redimensionnement de la grille par glisser-déposer ─
+(function initGridResize(){
+  const grid=document.getElementById('main-grid');
+  function parsePx(v){return parseFloat(v)||0;}
+  function getColWidths(){return getComputedStyle(grid).gridTemplateColumns.split(' ').map(parsePx);}
+  function getRowHeights(){return getComputedStyle(grid).gridTemplateRows.split(' ').map(parsePx);}
+
+  function positionSplitters(){
+    grid.querySelectorAll('.grid-splitter').forEach(s=>s.remove());
+    const cols=getColWidths(),rows=getRowHeights();
+    let x=0;
+    for(let i=0;i<cols.length-1;i++){
+      x+=cols[i];
+      const s=document.createElement('div');
+      s.className='grid-splitter col-splitter';
+      s.style.left=x+'px';
+      s.addEventListener('mousedown',e=>startDrag(e,'col',i,getColWidths()));
+      grid.appendChild(s);
+    }
+    let y=0;
+    for(let i=0;i<rows.length-1;i++){
+      y+=rows[i];
+      const s=document.createElement('div');
+      s.className='grid-splitter row-splitter';
+      s.style.top=y+'px';
+      s.addEventListener('mousedown',e=>startDrag(e,'row',i,getRowHeights()));
+      grid.appendChild(s);
+    }
+  }
+
+  function startDrag(e,type,idx,orig){
+    e.preventDefault();
+    const start=type==='col'?e.clientX:e.clientY;
+    const drag=e.currentTarget;
+    drag.classList.add('dragging');
+    grid.style.transition='none';
+    document.body.style.cursor=type==='col'?'col-resize':'row-resize';
+    document.body.style.userSelect='none';
+    function onMove(ev){
+      const delta=(type==='col'?ev.clientX:ev.clientY)-start;
+      const ns=[...orig];
+      ns[idx]=Math.max(100,orig[idx]+delta);
+      ns[idx+1]=Math.max(100,orig[idx+1]-delta);
+      if(type==='col')grid.style.gridTemplateColumns=ns.map(v=>v+'px').join(' ');
+      else grid.style.gridTemplateRows=ns.map(v=>v+'px').join(' ');
+      positionSplitters();
+    }
+    function onUp(){
+      drag.classList.remove('dragging');
+      grid.style.transition='';
+      document.body.style.cursor='';
+      document.body.style.userSelect='';
+      const p=loadPrefs();
+      if(grid.style.gridTemplateColumns)p.gridCols=grid.style.gridTemplateColumns;
+      if(grid.style.gridTemplateRows)p.gridRows=grid.style.gridTemplateRows;
+      savePrefs(p);
+      positionSplitters();
+      document.removeEventListener('mousemove',onMove);
+      document.removeEventListener('mouseup',onUp);
+    }
+    document.addEventListener('mousemove',onMove);
+    document.addEventListener('mouseup',onUp);
+  }
+
+  const p=loadPrefs();
+  if(p.gridCols)grid.style.gridTemplateColumns=p.gridCols;
+  if(p.gridRows)grid.style.gridTemplateRows=p.gridRows;
+  requestAnimationFrame(positionSplitters);
+  window.addEventListener('resize',positionSplitters);
+  window._positionGridSplitters=positionSplitters;
+})();
+
 // ── Météo ─────────────────────────────────────────────
 const WMO={0:'Ciel dégagé',1:'Peu nuageux',2:'Partiellement nuageux',3:'Couvert',45:'Brouillard',48:'Brouillard givrant',51:'Bruine légère',53:'Bruine',55:'Bruine forte',61:'Pluie légère',63:'Pluie',65:'Pluie forte',71:'Neige légère',73:'Neige',75:'Neige forte',80:'Averses légères',81:'Averses',82:'Averses fortes',95:'Orage',96:'Orage avec grêle',99:'Orage violent'};
 function wIcon(c,anim=true){
@@ -497,26 +580,32 @@ function minClass(m){return m<=4?'urgent':m<=7?'warning':'ok';}
 async function loadTram(){
   const container=document.getElementById('tram-data');
   const dot=document.getElementById('tram-status');
-  const stopHdr=`<p class="tram-stop-name">Albert I — Jardin des plantes</p>`;
   try{
     const data=await(await fetch('/api/tram')).json();
     if(data.error){
-      container.innerHTML=stopHdr+`<div class="tram-banner">⚠ Données temps réel indisponibles depuis le serveur.<br>Consultez <a href="https://www.tam-voyages.com" target="_blank">tam-voyages.com</a> pour les horaires en direct.</div>`;
+      container.innerHTML=`<div class="tram-banner">⚠ Données temps réel indisponibles.<br>Consultez <a href="https://www.tam-voyages.com" target="_blank">tam-voyages.com</a> pour les horaires en direct.</div>`;
       dot.classList.add('error'); return;
     }
     if(!Array.isArray(data)||!data.length){
-      container.innerHTML=stopHdr+`<p class="loading">Aucun passage dans l'heure</p>`;
+      container.innerHTML=`<p class="loading">Aucun passage dans l'heure</p>`;
       dot.classList.add('error'); return;
     }
-    dot.classList.remove('error');
-    container.innerHTML=stopHdr+data.map(p=>{
-      const cls=minClass(p.minutes);
-      const lbl=p.minutes===0?'À quai':`${p.minutes} min`;
-      return`<div class="tram-passage"><div class="tram-left"><div class="tram-line-badge" style="background:${p.color}">${p.line}</div><div><div class="tram-direction">${p.direction}</div><div class="${p.realtime?'tram-realtime':'tram-theoretical'}">${p.realtime?'● temps réel':'○ théorique'}</div></div></div><div><div class="tram-minutes ${cls}">${lbl}</div><div class="tram-time-label">${p.time}</div></div></div>`;
+    dot.classList.remove('error','off');
+    // Grouper par arrêt en conservant l'ordre d'apparition
+    const byStop=new Map();
+    data.forEach(p=>{if(!byStop.has(p.stop))byStop.set(p.stop,[]);byStop.get(p.stop).push(p);});
+    container.innerHTML=[...byStop.entries()].map(([stop,passages],si)=>{
+      const rows=passages.map(p=>{
+        const cls=minClass(p.minutes);
+        const lbl=p.minutes===0?'À quai':`${p.minutes} min`;
+        return`<div class="tram-passage"><div class="tram-left"><div class="tram-line-badge" style="background:${p.color}">${p.line}</div><div><div class="tram-direction">${p.direction}</div><div class="${p.realtime?'tram-realtime':'tram-theoretical'}">${p.realtime?'● temps réel':'○ théorique'}</div></div></div><div><div class="tram-minutes ${cls}">${lbl}</div><div class="tram-time-label">${p.time}</div></div></div>`;
+      }).join('');
+      const sep=si>0?'<div style="border-top:1px solid var(--border);margin:6px -16px;"></div>':'';
+      return sep+`<p class="tram-stop-name">${stop}</p>`+rows;
     }).join('');
   }catch{
     dot.classList.add('error');
-    container.innerHTML=stopHdr+`<p class="loading">Erreur de connexion</p>`;
+    container.innerHTML=`<p class="loading">Erreur de connexion</p>`;
   }
 }
 loadTram(); setInterval(loadTram,30000);

@@ -253,11 +253,20 @@ WATCHED_STOPS = [
     {
         "label":    "Albert 1er — Jardin des plantes",
         "stop_ids": {"1195", "1222"},
+        # Direction déduite du stop_id quand le headsign est absent du flux
+        "direction_by_id": {
+            "1195": "→ Odysseum",
+            "1222": "→ Mosson",
+        },
         "patterns": [],
     },
     {
         "label":    "Louis Blanc — Agora de la danse",
         "stop_ids": {"1194", "1223"},
+        "direction_by_id": {
+            "1194": "→ Odysseum",
+            "1223": "→ Mosson",
+        },
         "patterns": [],
     },
 ]
@@ -323,8 +332,19 @@ def _parse_passages(feed, now) -> list:
             if diff > 60:
                 continue
 
-            line = route_id.lstrip("0") if route_id else "?"
-            dest = headsign.title() if headsign else "—"
+            # Normalise route_id : "T1", "L1", "001" → "1"
+            raw = (route_id or "").strip()
+            for pfx in ("LIGNE", "LINE", "T", "L", "C"):
+                if raw.upper().startswith(pfx):
+                    raw = raw[len(pfx):]
+                    break
+            line = raw.lstrip("0") or "?"
+
+            # Direction : headsign du flux ou fallback depuis le stop_id
+            if headsign:
+                dest = headsign.title()
+            else:
+                dest = matched_stop.get("direction_by_id", {}).get(sid, "—")
 
             passages.append({
                 "stop":      matched_stop["label"],
