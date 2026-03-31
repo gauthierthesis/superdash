@@ -358,6 +358,31 @@ def _parse_passages(feed, now) -> list:
 
     return passages, all_ids_seen
 
+@app.route("/api/tram/debug")
+@login_required
+def debug_tram():
+    """Endpoint temporaire : dump route_ids + stop_ids du flux GTFS-RT."""
+    try:
+        from collections import defaultdict
+        raw  = _fetch_gtfs_rt()
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(raw)
+        by_route = defaultdict(set)
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
+                continue
+            tu  = entity.trip_update
+            rid = tu.trip.route_id
+            for stu in tu.stop_time_update:
+                by_route[rid].add(str(stu.stop_id))
+        result = {
+            rid: sorted(list(ids))[:12]
+            for rid, ids in sorted(by_route.items())
+        }
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/tram")
 @login_required
 def get_tram():
