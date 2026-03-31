@@ -1,7 +1,7 @@
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from dotenv import load_dotenv
 from functools import wraps
-import json, os, csv, io, re, feedparser, requests
+import json, os, re, feedparser, requests, time
 from datetime import datetime, timedelta
 import logging
 import gtfs_realtime_pb2  # généré localement depuis gtfs_realtime.proto
@@ -22,20 +22,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Chemins des fichiers de données
+# Rate limiting
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["300 per minute"],
+    storage_uri="memory://",
+)
+
+# ── Supabase ─────────────────────────────────────────────
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase_client = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        from supabase import create_client
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Supabase connecté (%s)", SUPABASE_URL)
+    except Exception as e:
+        logger.error("Supabase init échoué : %s", e)
+else:
+    logger.warning(
+        "SUPABASE_URL/SUPABASE_KEY absents — stockage JSON local (éphémère sur Render). "
+        "Ajouter ces variables d'environnement pour une persistance durable."
+    )
+
+# Chemins des fichiers de données (fallback local uniquement)
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR    = os.path.join(BASE_DIR, "data")
 TODOS_FILE  = os.path.join(DATA_DIR, "todos.json")
 EVENTS_FILE = os.path.join(DATA_DIR, "events.json")
-
-# Création automatique du dossier data au démarrage
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # ══════════════════════════════════════
-# HELPERS GÉNÉRIQUES
+# COUCHE DE DONNÉES (Supabase ou JSON local)
+# Table Supabase requise : app_data (key TEXT PRIMARY KEY, value JSONB NOT NULL DEFAULT '[]')
 # ══════════════════════════════════════
 def load_json(path: str, default=None):
-    """Charge un fichier JSON, retourne default si absent ou invalide."""
     if default is None:
         default = []
     try:
@@ -45,10 +71,35 @@ def load_json(path: str, default=None):
         return default
 
 def save_json(path: str, data):
-    """Sauvegarde data en JSON (crée le dossier si nécessaire)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+def _db_get(key: str, default=None):
+    """Lit les données depuis Supabase ou les fichiers JSON locaux."""
+    if default is None:
+        default = []
+    if supabase_client:
+        try:
+            result = supabase_client.table("app_data").select("value").eq("key", key).execute()
+            return result.data[0]["value"] if result.data else default
+        except Exception as e:
+            logger.error("Supabase get(%s) : %s", key, e)
+            return default
+    path = TODOS_FILE if key == "todos" else EVENTS_FILE
+    return load_json(path, default)
+
+def _db_set(key: str, value):
+    """Écrit les données dans Supabase ou les fichiers JSON locaux."""
+    if supabase_client:
+        try:
+            supabase_client.table("app_data").upsert({"key": key, "value": value}).execute()
+        except Exception as e:
+            logger.error("Supabase set(%s) : %s", key, e)
+            raise
+    else:
+        path = TODOS_FILE if key == "todos" else EVENTS_FILE
+        save_json(path, value)
 
 # ══════════════════════════════════════
 # AUTHENTIFICATION
@@ -89,26 +140,41 @@ def index():
 # ══════════════════════════════════════
 @app.route("/api/todos", methods=["GET"])
 @login_required
+@limiter.limit("60 per minute")
 def get_todos():
-    return jsonify(load_json(TODOS_FILE))
+    return jsonify(_db_get("todos"))
 
 @app.route("/api/todos", methods=["POST"])
 @login_required
+@limiter.limit("60 per minute")
 def save_todos():
     todos = request.get_json()
     if not isinstance(todos, list):
         return jsonify({"error": "Format invalide"}), 400
-    save_json(TODOS_FILE, todos)
+    sanitized = []
+    for t in todos:
+        if not isinstance(t, dict):
+            continue
+        text = str(t.get("text", "")).strip()[:500]
+        if not text:
+            continue
+        sanitized.append({"text": text, "done": bool(t.get("done", False))})
+    try:
+        _db_set("todos", sanitized)
+    except Exception as e:
+        logger.error("Erreur save_todos : %s", e)
+        return jsonify({"error": "Erreur de sauvegarde"}), 500
     return jsonify({"status": "ok"})
 
 # ══════════════════════════════════════
-# CALENDRIER LOCAL
+# CALENDRIER
 # ══════════════════════════════════════
 @app.route("/api/events", methods=["GET"])
 @login_required
+@limiter.limit("60 per minute")
 def get_events():
     try:
-        events  = load_json(EVENTS_FILE)
+        events  = _db_get("events")
         now     = datetime.now()
         upcoming = []
         for e in events:
@@ -132,56 +198,61 @@ def get_events():
         upcoming.sort(key=lambda x: x["raw"])
         return jsonify(upcoming[:8])
     except Exception as e:
-        logger.error("Erreur events : %s", e)
+        logger.error("Erreur get_events : %s", e)
         return jsonify([])
 
 @app.route("/api/events", methods=["POST"])
 @login_required
+@limiter.limit("30 per minute")
 def add_event():
     try:
         data  = request.get_json()
-        title = data.get("title", "").strip()
-        date  = data.get("date", "").strip()
+        title = str(data.get("title", "")).strip()[:200]
+        date  = str(data.get("date", "")).strip()
         if not title or not date:
             return jsonify({"error": "title et date sont requis"}), 400
-        datetime.fromisoformat(date)  # valide le format
-        events = load_json(EVENTS_FILE)
+        dt = datetime.fromisoformat(date)
+        if dt > datetime.now() + timedelta(days=3650):
+            return jsonify({"error": "Date trop éloignée (max 10 ans)"}), 400
+        events = _db_get("events")
         events.append({
             "id":    str(datetime.now().timestamp()),
             "title": title,
             "date":  date,
         })
-        save_json(EVENTS_FILE, events)
+        _db_set("events", events)
         return jsonify({"status": "ok"})
     except ValueError:
         return jsonify({"error": "Format de date invalide (ISO 8601 attendu)"}), 400
     except Exception as e:
         logger.error("Erreur add_event : %s", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Erreur de sauvegarde"}), 500
 
 @app.route("/api/events/<event_id>", methods=["DELETE"])
 @login_required
+@limiter.limit("30 per minute")
 def delete_event(event_id):
     try:
-        events = [e for e in load_json(EVENTS_FILE) if e.get("id") != event_id]
-        save_json(EVENTS_FILE, events)
+        events = [e for e in _db_get("events") if e.get("id") != event_id]
+        _db_set("events", events)
         return jsonify({"status": "ok"})
     except Exception as e:
         logger.error("Erreur delete_event : %s", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Erreur de suppression"}), 500
 
 # ══════════════════════════════════════
 # MÉTÉO — Open-Meteo (gratuit, sans clé)
 # ══════════════════════════════════════
 @app.route("/api/weather")
 @login_required
+@limiter.limit("30 per minute")
 def get_weather():
     try:
         res = requests.get(
             "https://api.open-meteo.com/v1/forecast",
             params={
-                "latitude":      43.6108,
-                "longitude":     3.8767,
+                "latitude":      os.getenv("WEATHER_LAT", "43.6108"),
+                "longitude":     os.getenv("WEATHER_LON", "3.8767"),
                 "current":       "temperature_2m,weathercode,windspeed_10m,relativehumidity_2m,apparent_temperature",
                 "daily":         "weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum",
                 "timezone":      "Europe/Paris",
@@ -221,72 +292,66 @@ def get_weather():
 
 # ══════════════════════════════════════
 # TRAM — GTFS-RT TAM Montpellier
-# Flux protobuf officiel, sans clé API
-# 2 arrêts surveillés : Albert 1er + Louis Blanc
+# Stop IDs configurables via env vars :
+#   GTFS_STOP_IDS_ALBERT      (défaut: "1195,1222")
+#   GTFS_STOP_IDS_LOUIS_BLANC (défaut: "1194,1223")
+# Ligne 1 sens Mosson→Odysseum : Albert=1195, Louis Blanc=1194
+# Ligne 1 sens Odysseum→Mosson : Albert=1222, Louis Blanc=1223
 # ══════════════════════════════════════
 TAM_COLORS = {
-    "1": "#009FE3",
-    "2": "#E2001A",
-    "3": "#00A550",
-    "4": "#8B5CA5",
-    "5": "#F39200",
-    "6": "#E5007D",
-    "7": "#B2C800",
-    "8": "#009FE3",
-    "9": "#6DBEAA",
+    "1": "#009FE3", "2": "#E2001A", "3": "#00A550", "4": "#8B5CA5",
+    "5": "#F39200", "6": "#E5007D", "7": "#B2C800", "8": "#009FE3", "9": "#6DBEAA",
 }
 
-# Flux GTFS-RT TripUpdates — essayé dans l'ordre
 GTFS_RT_URLS = [
     "https://proxy.transport.data.gouv.fr/resource/tam-montpellier-gtfs-rt-trip-updates",
     "https://data.montpellier3m.fr/GTFS/Urbain/TripUpdate.pb",
 ]
 
-# Configuration des arrêts surveillés.
-# stop_ids : entiers courts utilisés dans le flux GTFS-RT TAM.
-# patterns : correspondance partielle sur stop_id textuel (fallback si IDs changent).
-# Les vrais IDs seront confirmés dans les logs après le premier déploiement.
-# Stop IDs identifiés depuis les séquences réelles du flux GTFS-RT TAM
-# Ligne 1, sens Mosson→Odysseum : Albert=1195, Louis Blanc=1194
-# Ligne 1, sens Odysseum→Mosson : Albert=1222, Louis Blanc=1223
 WATCHED_STOPS = [
     {
         "label":    "Albert 1er — Jardin des plantes",
-        "stop_ids": {"1195", "1222"},
+        "stop_ids": set(os.getenv("GTFS_STOP_IDS_ALBERT", "1195,1222").split(",")),
         "patterns": [],
     },
     {
         "label":    "Louis Blanc — Agora de la danse",
-        "stop_ids": {"1194", "1223"},
+        "stop_ids": set(os.getenv("GTFS_STOP_IDS_LOUIS_BLANC", "1194,1223").split(",")),
         "patterns": [],
     },
 ]
 
 def _fetch_gtfs_rt() -> bytes:
-    """Télécharge le flux GTFS-RT en essayant plusieurs URLs."""
-    headers = {"User-Agent": "Mozilla/5.0 (dashboard/1.0)"}
+    """Télécharge le flux GTFS-RT avec retry (3 tentatives par URL)."""
+    headers   = {"User-Agent": "Mozilla/5.0 (dashboard/1.0)"}
+    last_error = None
     for url in GTFS_RT_URLS:
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            r.raise_for_status()
-            if len(r.content) > 100:
-                logger.info("GTFS-RT récupéré depuis %s (%d bytes)", url, len(r.content))
-                return r.content
-        except Exception as e:
-            logger.warning("GTFS-RT indisponible (%s) : %s", url, e)
-    raise RuntimeError("Aucune source GTFS-RT disponible")
+        for attempt in range(3):
+            try:
+                r = requests.get(url, headers=headers, timeout=10)
+                r.raise_for_status()
+                if len(r.content) > 100:
+                    logger.info("GTFS-RT récupéré depuis %s (%d bytes)", url, len(r.content))
+                    return r.content
+                break  # contenu trop petit → essayer l'URL suivante
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    logger.warning("GTFS-RT tentative %d/3 (%s) : %s", attempt + 1, url, e)
+                    time.sleep(1)
+                else:
+                    logger.warning("GTFS-RT abandonné (%s) après 3 tentatives : %s", url, e)
+    raise RuntimeError(f"Aucune source GTFS-RT disponible ({last_error})")
 
 def _stop_matches(sid: str, stop_cfg: dict) -> bool:
-    """Vérifie si un stop_id correspond à un arrêt surveillé (ID exact ou pattern)."""
     if sid in stop_cfg["stop_ids"]:
         return True
     sid_upper = sid.upper()
     return any(p in sid_upper for p in stop_cfg["patterns"])
 
-def _parse_passages(feed, now) -> list:
-    """Extrait tous les passages à venir pour les arrêts surveillés."""
-    passages = []
-    all_ids_seen = set()  # pour diagnostic
+def _parse_passages(feed, now) -> tuple:
+    passages     = []
+    all_ids_seen = set()
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
@@ -299,7 +364,6 @@ def _parse_passages(feed, now) -> list:
             sid = str(stu.stop_id)
             all_ids_seen.add(sid)
 
-            # Cherche quel arrêt surveillé correspond
             matched_stop = None
             for stop_cfg in WATCHED_STOPS:
                 if _stop_matches(sid, stop_cfg):
@@ -308,7 +372,6 @@ def _parse_passages(feed, now) -> list:
             if not matched_stop:
                 continue
 
-            # Heure de départ (ou arrivée si absent)
             if stu.HasField("departure"):
                 ts, delay = stu.departure.time, stu.departure.delay
             elif stu.HasField("arrival"):
@@ -340,6 +403,7 @@ def _parse_passages(feed, now) -> list:
 
 @app.route("/api/tram")
 @login_required
+@limiter.limit("30 per minute")
 def get_tram():
     try:
         raw  = _fetch_gtfs_rt()
@@ -349,7 +413,6 @@ def get_tram():
 
         passages, all_ids = _parse_passages(feed, now)
 
-        # Dédoublonner par (arrêt, ligne, direction, minute)
         seen, unique = set(), []
         for p in sorted(passages, key=lambda x: (x["stop"], x["minutes"])):
             key = (p["stop"], p["line"], p["direction"], p["minutes"])
@@ -375,118 +438,40 @@ def get_tram():
 
 # ══════════════════════════════════════
 # ACTUALITÉS IA — Flux RSS natifs
+# Cache TTL : 15 minutes (NEWS_CACHE_TTL)
 # ══════════════════════════════════════
-# Catégories : recherche, produits, réglementation/droit, éthique, business
 AI_FEEDS = {
     # ── Recherche & technique ────────────────────────────────────
-    "MIT Tech Review": {
-        "url":  "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",
-        "icon": "🔬",
-    },
-    "Hugging Face": {
-        "url":  "https://huggingface.co/blog/feed.xml",
-        "icon": "🤗",
-    },
-    "DeepMind": {
-        "url":  "https://deepmind.google/blog/rss.xml",
-        "icon": "🧬",
-    },
-    "Google AI": {
-        "url":  "https://blog.research.google/feeds/posts/default?alt=rss",
-        "icon": "🔵",
-    },
-    "Meta AI": {
-        "url":  "https://ai.meta.com/blog/rss/",
-        "icon": "🟦",
-    },
-    "Papers With Code": {
-        "url":  "https://paperswithcode.com/latest.rss",
-        "icon": "📄",
-    },
+    "MIT Tech Review":   {"url": "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",                    "icon": "🔬"},
+    "Hugging Face":      {"url": "https://huggingface.co/blog/feed.xml",                                              "icon": "🤗"},
+    "DeepMind":          {"url": "https://deepmind.google/blog/rss.xml",                                              "icon": "🧬"},
+    "Google AI":         {"url": "https://blog.research.google/feeds/posts/default?alt=rss",                          "icon": "🔵"},
+    "Meta AI":           {"url": "https://ai.meta.com/blog/rss/",                                                     "icon": "🟦"},
+    "Papers With Code":  {"url": "https://paperswithcode.com/latest.rss",                                             "icon": "📄"},
     # ── Labs & modèles ───────────────────────────────────────────
-    "Anthropic": {
-        "url":  "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_claude.xml",
-        "icon": "🧠",
-    },
-    "OpenAI": {
-        "url":  "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_openai_research.xml",
-        "icon": "✦",
-    },
-    "Mistral AI": {
-        "url":  "https://mistral.ai/news/rss.xml",
-        "icon": "💨",
-    },
-    "Cohere": {
-        "url":  "https://cohere.com/blog/rss",
-        "icon": "🔷",
-    },
+    "Anthropic":         {"url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_claude.xml",   "icon": "🧠"},
+    "OpenAI":            {"url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_openai_research.xml", "icon": "✦"},
+    "Mistral AI":        {"url": "https://mistral.ai/news/rss.xml",                                                   "icon": "💨"},
+    "Cohere":            {"url": "https://cohere.com/blog/rss",                                                       "icon": "🔷"},
     # ── Actualités tech & IA ─────────────────────────────────────
-    "The Verge AI": {
-        "url":  "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
-        "icon": "⚡",
-    },
-    "VentureBeat IA": {
-        "url":  "https://venturebeat.com/category/ai/feed/",
-        "icon": "📡",
-    },
-    "Wired AI": {
-        "url":  "https://www.wired.com/feed/tag/artificial-intelligence/latest/rss",
-        "icon": "🌐",
-    },
-    "TechCrunch AI": {
-        "url":  "https://techcrunch.com/category/artificial-intelligence/feed/",
-        "icon": "🚀",
-    },
-    "Ars Technica AI": {
-        "url":  "https://feeds.arstechnica.com/arstechnica/technology-lab",
-        "icon": "🖥",
-    },
-    "Import AI": {
-        "url":  "https://importai.substack.com/feed",
-        "icon": "📨",
-    },
-    "The Batch (DeepLearning.AI)": {
-        "url":  "https://read.deeplearning.ai/the-batch/rss/",
-        "icon": "📦",
-    },
+    "The Verge AI":      {"url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",                 "icon": "⚡"},
+    "VentureBeat IA":    {"url": "https://venturebeat.com/category/ai/feed/",                                         "icon": "📡"},
+    "Wired AI":          {"url": "https://www.wired.com/feed/tag/artificial-intelligence/latest/rss",                 "icon": "🌐"},
+    "TechCrunch AI":     {"url": "https://techcrunch.com/category/artificial-intelligence/feed/",                     "icon": "🚀"},
+    "Ars Technica AI":   {"url": "https://feeds.arstechnica.com/arstechnica/technology-lab",                          "icon": "🖥"},
+    "Import AI":         {"url": "https://importai.substack.com/feed",                                                "icon": "📨"},
+    "The Batch":         {"url": "https://read.deeplearning.ai/the-batch/rss/",                                       "icon": "📦"},
     # ── Réglementation, droit & politique ────────────────────────
-    "AI Policy (Future of Life)": {
-        "url":  "https://futureoflife.org/feed/",
-        "icon": "⚖️",
-    },
-    "European Parliament AI": {
-        "url":  "https://www.europarl.europa.eu/rss/doc/news-articles/en.rss",
-        "icon": "🇪🇺",
-    },
-    "CNIL": {
-        "url":  "https://www.cnil.fr/fr/rss.xml",
-        "icon": "🛡",
-    },
-    "AI Now Institute": {
-        "url":  "https://ainowinstitute.org/feed",
-        "icon": "📜",
-    },
-    "Stanford HAI": {
-        "url":  "https://hai.stanford.edu/news/rss.xml",
-        "icon": "🏛",
-    },
-    "Brookings AI": {
-        "url":  "https://www.brookings.edu/topic/artificial-intelligence/feed/",
-        "icon": "🏦",
-    },
+    "AI Policy":         {"url": "https://futureoflife.org/feed/",                                                    "icon": "⚖️"},
+    "European Parliament": {"url": "https://www.europarl.europa.eu/rss/doc/news-articles/en.rss",                    "icon": "🇪🇺"},
+    "CNIL":              {"url": "https://www.cnil.fr/fr/rss.xml",                                                    "icon": "🛡"},
+    "AI Now Institute":  {"url": "https://ainowinstitute.org/feed",                                                   "icon": "📜"},
+    "Stanford HAI":      {"url": "https://hai.stanford.edu/news/rss.xml",                                             "icon": "🏛"},
+    "Brookings AI":      {"url": "https://www.brookings.edu/topic/artificial-intelligence/feed/",                     "icon": "🏦"},
     # ── Éthique & société ────────────────────────────────────────
-    "AlgorithmWatch": {
-        "url":  "https://algorithmwatch.org/en/feed/",
-        "icon": "🔍",
-    },
-    "Partnership on AI": {
-        "url":  "https://partnershiponai.org/feed/",
-        "icon": "🤝",
-    },
-    "Mozilla Foundation AI": {
-        "url":  "https://foundation.mozilla.org/en/feed/blog/",
-        "icon": "🦊",
-    },
+    "AlgorithmWatch":    {"url": "https://algorithmwatch.org/en/feed/",                                               "icon": "🔍"},
+    "Partnership on AI": {"url": "https://partnershiponai.org/feed/",                                                 "icon": "🤝"},
+    "Mozilla Foundation": {"url": "https://foundation.mozilla.org/en/feed/blog/",                                    "icon": "🦊"},
 }
 
 RSS_HEADERS = {
@@ -497,11 +482,21 @@ RSS_HEADERS = {
     )
 }
 
+_news_cache: dict = {"data": None, "ts": 0.0}
+NEWS_CACHE_TTL = 900  # 15 minutes
+
 @app.route("/api/news")
 @login_required
+@limiter.limit("20 per minute")
 def get_news():
+    now_ts = time.time()
+    if _news_cache["data"] is not None and (now_ts - _news_cache["ts"]) < NEWS_CACHE_TTL:
+        logger.info("News servi depuis le cache (âge: %ds)", int(now_ts - _news_cache["ts"]))
+        return jsonify(_news_cache["data"])
+
     articles = []
     now      = datetime.now()
+    errors   = []
 
     for source, meta in AI_FEEDS.items():
         try:
@@ -524,8 +519,12 @@ def get_news():
                     time_str = ""
                     dt = now
 
-                title   = entry.get("title", "Sans titre")
+                title   = entry.get("title", "Sans titre")[:300]
                 summary = re.sub(r"<[^>]+>", "", entry.get("summary", ""))[:160]
+                link    = entry.get("link", "")
+                # Validation basique : accepter seulement http(s)
+                if link and not link.startswith(("http://", "https://")):
+                    link = ""
 
                 articles.append({
                     "source":  source,
@@ -533,15 +532,25 @@ def get_news():
                     "title":   title,
                     "summary": summary,
                     "time":    time_str,
-                    "link":    entry.get("link", ""),
+                    "link":    link,
                     "_dt":     dt.isoformat(),
                 })
+        except requests.RequestException as e:
+            errors.append(f"{source}: réseau ({type(e).__name__})")
         except Exception as e:
-            logger.warning("Erreur flux %s : %s", source, e)
-            continue
+            errors.append(f"{source}: {type(e).__name__}")
+
+    if errors:
+        logger.warning(
+            "Flux RSS en erreur (%d/%d) : %s",
+            len(errors), len(AI_FEEDS), "; ".join(errors[:5])
+        )
 
     articles.sort(key=lambda x: x.pop("_dt", ""), reverse=True)
-    return jsonify(articles[:12])
+    result = articles[:12]
+    _news_cache["data"] = result
+    _news_cache["ts"]   = now_ts
+    return jsonify(result)
 
 # Alias rétrocompatibilité
 @app.route("/api/twitter")

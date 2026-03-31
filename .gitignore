@@ -1,0 +1,30 @@
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+env/
+.venv/
+
+# ── Environnement local ──────────────────────────────────
+.env
+*.env
+
+# ── Données (éphémères, remplacées par Supabase) ─────────
+data/
+
+# ── Node / frontend (feature supprimée) ─────────────────
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+src/
+
+# ── IDE ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
