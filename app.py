@@ -224,199 +224,167 @@ def get_weather():
 # Flux protobuf officiel, sans clé API
 # 2 arrêts surveillés : Albert 1er + Louis Blanc
 # ══════════════════════════════════════
+import requests
+import time
+import logging
+from datetime import datetime
+from google.transit import gtfs_realtime_pb2
+from flask import jsonify
+
+# configuration
+logger = logging.getLogger(__name__)
+
 TAM_COLORS = {
-    "1": "#009FE3",
-    "2": "#E2001A",
-    "3": "#00A550",
-    "4": "#8B5CA5",
-    "5": "#F39200",
-    "6": "#E5007D",
-    "7": "#B2C800",
-    "8": "#009FE3",
-    "9": "#6DBEAA",
+    "1": "#009FE3", "2": "#E2001A", "3": "#00A550", "4": "#8B5CA5",
+    "5": "#F39200", "6": "#E5007D", "7": "#B2C800", "8": "#009FE3", "9": "#6DBEAA",
 }
 
-# Flux GTFS-RT TripUpdates — essayé dans l'ordre
 GTFS_RT_URLS = [
     "https://proxy.transport.data.gouv.fr/resource/tam-montpellier-gtfs-rt-trip-updates",
     "https://data.montpellier3m.fr/GTFS/Urbain/TripUpdate.pb",
 ]
 
-# Configuration des arrêts surveillés.
-# stop_ids : entiers courts utilisés dans le flux GTFS-RT TAM.
-# patterns : correspondance partielle sur stop_id textuel (fallback si IDs changent).
-# Les vrais IDs seront confirmés dans les logs après le premier déploiement.
-# Stop IDs identifiés depuis les séquences réelles du flux GTFS-RT TAM
-# Ligne 1, sens Mosson→Odysseum : Albert=1195, Louis Blanc=1194
-# Ligne 1, sens Odysseum→Mosson : Albert=1222, Louis Blanc=1223
 WATCHED_STOPS = [
     {
-        "label":    "Albert 1er — Jardin des plantes",
+        "id": "albert_1er",
+        "label": "Albert 1er — Jardin des plantes",
         "stop_ids": {"1195", "1222"},
-        # Direction déduite du stop_id quand le headsign est absent du flux
-        "direction_by_id": {
-            "1195": "→ Odysseum",
-            "1222": "→ Mosson",
-        },
-        "patterns": [],
+        "direction_by_id": {"1195": "→ Odysseum", "1222": "→ Mosson"},
+        "patterns": ["ALBERT 1ER"],
     },
     {
-        "label":    "Louis Blanc — Agora de la danse",
+        "id": "louis_blanc",
+        "label": "Louis Blanc — Agora de la danse",
         "stop_ids": {"1194", "1223"},
-        "direction_by_id": {
-            "1194": "→ Odysseum",
-            "1223": "→ Mosson",
-        },
-        "patterns": [],
+        "direction_by_id": {"1194": "→ Odysseum", "1223": "→ Mosson"},
+        "patterns": ["LOUIS BLANC"],
     },
 ]
 
-def _fetch_gtfs_rt() -> bytes:
-    """Télécharge le flux GTFS-RT en essayant plusieurs URLs."""
-    headers = {"User-Agent": "Mozilla/5.0 (dashboard/1.0)"}
-    for url in GTFS_RT_URLS:
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            r.raise_for_status()
-            if len(r.content) > 100:
-                logger.info("GTFS-RT récupéré depuis %s (%d bytes)", url, len(r.content))
-                return r.content
-        except Exception as e:
-            logger.warning("GTFS-RT indisponible (%s) : %s", url, e)
-    raise RuntimeError("Aucune source GTFS-RT disponible")
+# gestionnaire de données avec cache
+class TramService:
+    def __init__(self):
+        self.session = requests.Session()
+        self._cache = None
+        self._cache_time = 0
+        self.CACHE_TTL = 60  # secondes
 
-def _stop_matches(sid: str, stop_cfg: dict) -> bool:
-    """Vérifie si un stop_id correspond à un arrêt surveillé (ID exact ou pattern)."""
-    if sid in stop_cfg["stop_ids"]:
-        return True
-    sid_upper = sid.upper()
-    return any(p in sid_upper for p in stop_cfg["patterns"])
+    def fetch_feed(self):
+        now = time.time()
+        if self._cache and (now - self._cache_time < self.CACHE_TTL):
+            return self._cache
 
-def _parse_passages(feed, now) -> list:
-    """Extrait tous les passages à venir pour les arrêts surveillés."""
-    passages = []
-    all_ids_seen = set()  # pour diagnostic
+        headers = {"User-Agent": "Mozilla/5.0 (dashboard/2.0)"}
+        for url in GTFS_RT_URLS:
+            try:
+                r = self.session.get(url, headers=headers, timeout=10)
+                r.raise_for_status()
+                feed = gtfs_realtime_pb2.FeedMessage()
+                feed.ParseFromString(r.content)
+                self._cache = feed
+                self._cache_time = now
+                return feed
+            except Exception as e:
+                logger.warning(f"source {url} indisponible : {e}")
+        
+        if self._cache: return self._cache
+        raise RuntimeError("aucune source de données gtfs-rt disponible")
 
+    def normalize_line(self, route_id):
+        raw = (route_id or "").strip().upper()
+        for pfx in ("LIGNE", "LINE", "T", "L", "C"):
+            if raw.startswith(pfx):
+                raw = raw[len(pfx):]
+                break
+        return raw.lstrip("0") or "?"
+
+# instance unique du service
+tram_service = TramService()
+
+def _process_passages(feed):
+    now = datetime.now()
+    results = {stop["id"]: {"label": stop["label"], "passages": []} for stop in WATCHED_STOPS}
+    
     for entity in feed.entity:
-        if not entity.HasField("trip_update"):
-            continue
-        tu       = entity.trip_update
-        route_id = tu.trip.route_id
+        if not entity.HasField("trip_update"): continue
+        
+        tu = entity.trip_update
+        # ignore les trajets annulés
+        if getattr(tu.trip, "schedule_relationship", 0) == 3: continue
+
+        line = tram_service.normalize_line(tu.trip.route_id)
         headsign = getattr(tu.trip, "trip_headsign", "")
 
         for stu in tu.stop_time_update:
             sid = str(stu.stop_id)
-            all_ids_seen.add(sid)
-
-            # Cherche quel arrêt surveillé correspond
-            matched_stop = None
+            
             for stop_cfg in WATCHED_STOPS:
-                if _stop_matches(sid, stop_cfg):
-                    matched_stop = stop_cfg
-                    break
-            if not matched_stop:
-                continue
-
-            # Heure de départ (ou arrivée si absent)
-            if stu.HasField("departure"):
-                ts, delay = stu.departure.time, stu.departure.delay
-            elif stu.HasField("arrival"):
-                ts, delay = stu.arrival.time, stu.arrival.delay
-            else:
-                continue
-
-            depart = datetime.fromtimestamp(ts)
-            if depart < now:
-                continue
-            diff = int((depart - now).total_seconds() / 60)
-            if diff > 60:
-                continue
-
-            # Normalise route_id : "T1", "L1", "001" → "1"
-            raw = (route_id or "").strip()
-            for pfx in ("LIGNE", "LINE", "T", "L", "C"):
-                if raw.upper().startswith(pfx):
-                    raw = raw[len(pfx):]
-                    break
-            line = raw.lstrip("0") or "?"
-
-            # Direction : headsign du flux ou fallback depuis le stop_id
-            if headsign:
-                dest = headsign.title()
-            else:
-                dest = matched_stop.get("direction_by_id", {}).get(sid, "—")
-
-            passages.append({
-                "stop":      matched_stop["label"],
-                "line":      line,
-                "color":     TAM_COLORS.get(line, "#6B6560"),
-                "direction": dest,
-                "minutes":   diff,
-                "time":      depart.strftime("%H:%M"),
-                "realtime":  delay != 0,
-            })
-
-    return passages, all_ids_seen
-
-@app.route("/api/tram/debug")
-@login_required
-def debug_tram():
-    """Endpoint temporaire : dump route_ids + stop_ids du flux GTFS-RT."""
-    try:
-        from collections import defaultdict
-        raw  = _fetch_gtfs_rt()
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(raw)
-        by_route = defaultdict(set)
-        for entity in feed.entity:
-            if not entity.HasField("trip_update"):
-                continue
-            tu  = entity.trip_update
-            rid = tu.trip.route_id
-            for stu in tu.stop_time_update:
-                by_route[rid].add(str(stu.stop_id))
-        result = {
-            rid: sorted(list(ids))[:12]
-            for rid, ids in sorted(by_route.items())
-        }
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+                # vérification id exact ou pattern de secours
+                if sid in stop_cfg["stop_ids"] or any(p in sid.upper() for p in stop_cfg["patterns"]):
+                    event = stu.departure if stu.HasField("departure") else stu.arrival
+                    if not event: continue
+                    
+                    depart = datetime.fromtimestamp(event.time)
+                    diff = int((depart - now).total_seconds() / 60)
+                    
+                    if 0 <= diff <= 60:
+                        dest = headsign.title() if headsign else stop_cfg["direction_by_id"].get(sid, "—")
+                        results[stop_cfg["id"]]["passages"].append({
+                            "line": line,
+                            "color": TAM_COLORS.get(line, "#6B6560"),
+                            "direction": dest,
+                            "minutes": diff,
+                            "time": depart.strftime("%H:%M"),
+                            "realtime": event.delay != 0
+                        })
+    return results
 
 @app.route("/api/tram")
 @login_required
 def get_tram():
     try:
-        raw  = _fetch_gtfs_rt()
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(raw)
-        now  = datetime.now()
+        feed = tram_service.fetch_feed()
+        data = _process_passages(feed)
 
-        passages, all_ids = _parse_passages(feed, now)
+        # nettoyage, tri et dédoublonnage par arrêt
+        for stop_id in data:
+            unique_passages = []
+            seen_keys = set()
+            
+            # tri par temps d'attente
+            sorted_p = sorted(data[stop_id]["passages"], key=lambda x: x["minutes"])
+            
+            for p in sorted_p:
+                key = (p["line"], p["direction"], p["minutes"])
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    unique_passages.append(p)
+            
+            data[stop_id]["passages"] = unique_passages[:6]
 
-        # Dédoublonner par (arrêt, ligne, direction, minute)
-        seen, unique = set(), []
-        for p in sorted(passages, key=lambda x: (x["stop"], x["minutes"])):
-            key = (p["stop"], p["line"], p["direction"], p["minutes"])
-            if key not in seen:
-                seen.add(key)
-                unique.append(p)
-
-        if not unique:
-            logger.warning(
-                "0 passage trouvé. Échantillon stop_ids flux : %s",
-                sorted(all_ids)[:80]
-            )
-            return jsonify({"error": "Aucun passage — stop_ids à ajuster"}), 404
-
-        return jsonify(unique[:12])
+        return jsonify(data)
 
     except RuntimeError as e:
-        logger.error("Tram source : %s", e)
         return jsonify({"error": str(e)}), 503
     except Exception as e:
-        logger.error("Erreur tram : %s", e)
-        return jsonify({"error": "Erreur interne"}), 500
+        logger.error(f"erreur tram : {e}")
+        return jsonify({"error": "erreur interne"}), 500
+
+@app.route("/api/tram/debug")
+@login_required
+def debug_tram():
+    try:
+        from collections import defaultdict
+        feed = tram_service.fetch_feed()
+        by_route = defaultdict(set)
+        for entity in feed.entity:
+            if entity.HasField("trip_update"):
+                tu = entity.trip_update
+                for stu in tu.stop_time_update:
+                    by_route[tu.trip.route_id].add(str(stu.stop_id))
+        return jsonify({r: sorted(list(ids))[:10] for r, ids in by_route.items()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ══════════════════════════════════════
 # ACTUALITÉS IA — Flux RSS natifs
