@@ -5,6 +5,12 @@ import json, os, csv, io, re, feedparser, requests
 from datetime import datetime, timedelta
 import logging
 import gtfs_realtime_pb2  # généré localement depuis gtfs_realtime.proto
+import requests
+import time
+import logging
+from datetime import datetime
+from google.transit import gtfs_realtime_pb2
+from flask import jsonify
 
 load_dotenv()
 
@@ -224,12 +230,7 @@ def get_weather():
 # Flux protobuf officiel, sans clé API
 # 2 arrêts surveillés : Albert 1er + Louis Blanc
 # ══════════════════════════════════════
-import requests
-import time
-import logging
-from datetime import datetime
-from google.transit import gtfs_realtime_pb2
-from flask import jsonify
+
 
 # configuration
 logger = logging.getLogger(__name__)
