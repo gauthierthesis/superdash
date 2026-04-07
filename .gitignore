@@ -1,0 +1,21 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# macOS Finder / resource forks
+.DS_Store
+._*
+
+# Local data (ephemeral on Render)
+data/*.json
+
+# Node / frontend artifacts (not used by Flask runtime here)
+node_modules/
+
+# IDE / assistant tooling
+.claude/
+

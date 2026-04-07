@@ -75,12 +75,9 @@ dashboard/
 ├── Procfile            # Commande de démarrage pour Render
 ├── .env.example        # Template de configuration (à copier en .env)
 ├── .gitignore
-├── data/               # Données JSON (non commité, éphémère sur Render)
-│   ├── todos.json
-│   └── events.json
+├── data/               # Données JSON (ignorées par git, éphémères sur Render)
 ├── templates/          # Vues Jinja2
 │   ├── index.html
 │   └── login.html
-└── static/             # CSS, JS, images
 ```
 # superdash
