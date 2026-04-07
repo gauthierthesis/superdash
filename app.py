@@ -5,12 +5,8 @@ import json, os, csv, io, re, feedparser, requests
 from datetime import datetime, timedelta
 import logging
 import gtfs_realtime_pb2  # généré localement depuis gtfs_realtime.proto
-import requests
 import time
-import logging
-from datetime import datetime
 from google.transit import gtfs_realtime_pb2
-from flask import jsonify
 
 load_dotenv()
 
@@ -285,8 +281,10 @@ class TramService:
                 self._cache = feed
                 self._cache_time = now
                 return feed
+            except requests.RequestException as e:
+                logger.warning("source %s indisponible (réseau/http) : %s", url, e)
             except Exception as e:
-                logger.warning(f"source {url} indisponible : {e}")
+                logger.warning("source %s indisponible (parse) : %s", url, e)
         
         if self._cache: return self._cache
         raise RuntimeError("aucune source de données gtfs-rt disponible")
@@ -303,8 +301,18 @@ class TramService:
 tram_service = TramService()
 
 def _process_passages(feed):
-    now = datetime.now()
+    now = datetime.now().astimezone()
     results = {stop["id"]: {"label": stop["label"], "passages": []} for stop in WATCHED_STOPS}
+
+    # Index pour éviter de boucler WATCHED_STOPS à chaque stop_time_update
+    stop_by_sid = {}
+    pattern_stops = []
+    for stop_cfg in WATCHED_STOPS:
+        for sid in stop_cfg.get("stop_ids", set()):
+            stop_by_sid[str(sid)] = stop_cfg
+        patterns = [p.upper() for p in stop_cfg.get("patterns", []) if p]
+        if patterns:
+            pattern_stops.append((patterns, stop_cfg))
     
     for entity in feed.entity:
         if not entity.HasField("trip_update"): continue
@@ -318,26 +326,41 @@ def _process_passages(feed):
 
         for stu in tu.stop_time_update:
             sid = str(stu.stop_id)
-            
-            for stop_cfg in WATCHED_STOPS:
-                # vérification id exact ou pattern de secours
-                if sid in stop_cfg["stop_ids"] or any(p in sid.upper() for p in stop_cfg["patterns"]):
-                    event = stu.departure if stu.HasField("departure") else stu.arrival
-                    if not event: continue
-                    
-                    depart = datetime.fromtimestamp(event.time)
-                    diff = int((depart - now).total_seconds() / 60)
-                    
-                    if 0 <= diff <= 60:
-                        dest = headsign.title() if headsign else stop_cfg["direction_by_id"].get(sid, "—")
-                        results[stop_cfg["id"]]["passages"].append({
-                            "line": line,
-                            "color": TAM_COLORS.get(line, "#6B6560"),
-                            "direction": dest,
-                            "minutes": diff,
-                            "time": depart.strftime("%H:%M"),
-                            "realtime": event.delay != 0
-                        })
+
+            stop_cfg = stop_by_sid.get(sid)
+            if stop_cfg is None and pattern_stops:
+                # secours: certains feeds peuvent fournir un stop_id "non standard"
+                sid_u = sid.upper()
+                for patterns, cfg in pattern_stops:
+                    if any(p in sid_u for p in patterns):
+                        stop_cfg = cfg
+                        break
+            if stop_cfg is None:
+                continue
+
+            event = stu.departure if stu.HasField("departure") else stu.arrival
+            if not event:
+                continue
+
+            ev_time = getattr(event, "time", 0) or 0
+            if not ev_time:
+                continue
+
+            depart = datetime.fromtimestamp(ev_time).astimezone()
+            diff = int((depart - now).total_seconds() / 60)
+            if not (0 <= diff <= 60):
+                continue
+
+            dest = headsign.title() if headsign else stop_cfg["direction_by_id"].get(sid, "—")
+            delay = getattr(event, "delay", 0) or 0
+            results[stop_cfg["id"]]["passages"].append({
+                "line": line,
+                "color": TAM_COLORS.get(line, "#6B6560"),
+                "direction": dest,
+                "minutes": diff,
+                "time": depart.strftime("%H:%M"),
+                "realtime": delay != 0
+            })
     return results
 
 @app.route("/api/tram")
@@ -356,14 +379,24 @@ def get_tram():
             sorted_p = sorted(data[stop_id]["passages"], key=lambda x: x["minutes"])
             
             for p in sorted_p:
-                key = (p["line"], p["direction"], p["minutes"])
+                key = (p["line"], p["direction"], p["minutes"], p["time"])
                 if key not in seen_keys:
                     seen_keys.add(key)
                     unique_passages.append(p)
             
             data[stop_id]["passages"] = unique_passages[:6]
 
-        return jsonify(data)
+        # Aplatir au format attendu par le front : liste de passages avec champ `stop`
+        flat = []
+        for stop_id in WATCHED_STOPS:
+            sid = stop_id["id"]
+            stop_label = data.get(sid, {}).get("label", sid)
+            for p in data.get(sid, {}).get("passages", []):
+                flat.append({**p, "stop": stop_label})
+
+        # tri final : arrêt puis minutes
+        flat.sort(key=lambda x: (x.get("stop", ""), x.get("minutes", 999)))
+        return jsonify(flat)
 
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503

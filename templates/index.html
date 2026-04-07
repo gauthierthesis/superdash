@@ -577,6 +577,13 @@ loadWeather(); setInterval(loadWeather,600000);
 
 // ── Tram ──────────────────────────────────────────────
 function minClass(m){return m<=4?'urgent':m<=7?'warning':'ok';}
+function esc(s){
+  return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function safeColor(c){
+  const s=String(c??'');
+  return /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(s) ? s : '#6B6560';
+}
 async function loadTram(){
   const container=document.getElementById('tram-data');
   const dot=document.getElementById('tram-status');
@@ -598,10 +605,10 @@ async function loadTram(){
       const rows=passages.map(p=>{
         const cls=minClass(p.minutes);
         const lbl=p.minutes===0?'À quai':`${p.minutes} min`;
-        return`<div class="tram-passage"><div class="tram-left"><div class="tram-line-badge" style="background:${p.color}">${p.line}</div><div><div class="tram-direction">${p.direction}</div><div class="${p.realtime?'tram-realtime':'tram-theoretical'}">${p.realtime?'● temps réel':'○ théorique'}</div></div></div><div><div class="tram-minutes ${cls}">${lbl}</div><div class="tram-time-label">${p.time}</div></div></div>`;
+        return`<div class="tram-passage"><div class="tram-left"><div class="tram-line-badge" style="background:${safeColor(p.color)}">${esc(p.line)}</div><div><div class="tram-direction">${esc(p.direction)}</div><div class="${p.realtime?'tram-realtime':'tram-theoretical'}">${p.realtime?'● temps réel':'○ théorique'}</div></div></div><div><div class="tram-minutes ${cls}">${esc(lbl)}</div><div class="tram-time-label">${esc(p.time)}</div></div></div>`;
       }).join('');
       const sep=si>0?'<div style="border-top:1px solid var(--border);margin:6px -16px;"></div>':'';
-      return sep+`<p class="tram-stop-name">${stop}</p>`+rows;
+      return sep+`<p class="tram-stop-name">${esc(stop)}</p>`+rows;
     }).join('');
   }catch{
     dot.classList.add('error');
