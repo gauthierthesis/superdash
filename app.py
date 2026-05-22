@@ -1,10 +1,10 @@
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from dotenv import load_dotenv
 from functools import wraps
-import json, os, csv, io, re, feedparser, requests
-from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import json, os, re, feedparser, requests
+from datetime import datetime
 import logging
-import gtfs_realtime_pb2  # généré localement depuis gtfs_realtime.proto
 import time
 from google.transit import gtfs_realtime_pb2
 
@@ -13,31 +13,29 @@ load_dotenv()
 # ══════════════════════════════════════
 # CONFIGURATION
 # ══════════════════════════════════════
+
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "changez-cette-cle-svp")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 
-# Logging structuré pour Render
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# Chemins des fichiers de données
-BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR    = os.path.join(BASE_DIR, "data")
-TODOS_FILE  = os.path.join(DATA_DIR, "todos.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+TODOS_FILE = os.path.join(DATA_DIR, "todos.json")
 EVENTS_FILE = os.path.join(DATA_DIR, "events.json")
 
-# Création automatique du dossier data au démarrage
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # ══════════════════════════════════════
 # HELPERS GÉNÉRIQUES
 # ══════════════════════════════════════
+
 def load_json(path: str, default=None):
-    """Charge un fichier JSON, retourne default si absent ou invalide."""
     if default is None:
         default = []
     try:
@@ -47,7 +45,6 @@ def load_json(path: str, default=None):
         return default
 
 def save_json(path: str, data):
-    """Sauvegarde data en JSON (crée le dossier si nécessaire)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -55,6 +52,7 @@ def save_json(path: str, data):
 # ══════════════════════════════════════
 # AUTHENTIFICATION
 # ══════════════════════════════════════
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -81,6 +79,7 @@ def logout():
 # ══════════════════════════════════════
 # PAGE PRINCIPALE
 # ══════════════════════════════════════
+
 @app.route("/")
 @login_required
 def index():
@@ -89,6 +88,7 @@ def index():
 # ══════════════════════════════════════
 # TODO LIST
 # ══════════════════════════════════════
+
 @app.route("/api/todos", methods=["GET"])
 @login_required
 def get_todos():
@@ -106,12 +106,13 @@ def save_todos():
 # ══════════════════════════════════════
 # CALENDRIER LOCAL
 # ══════════════════════════════════════
+
 @app.route("/api/events", methods=["GET"])
 @login_required
 def get_events():
     try:
-        events  = load_json(EVENTS_FILE)
-        now     = datetime.now()
+        events = load_json(EVENTS_FILE)
+        now = datetime.now()
         upcoming = []
         for e in events:
             try:
@@ -124,10 +125,10 @@ def get_events():
                     else dt.strftime("%d %b à %H:%M")
                 )
                 upcoming.append({
-                    "id":    e.get("id", ""),
+                    "id": e.get("id", ""),
                     "title": e["title"],
-                    "date":  date_str,
-                    "raw":   e["date"],
+                    "date": date_str,
+                    "raw": e["date"],
                 })
             except (KeyError, ValueError):
                 continue
@@ -141,17 +142,17 @@ def get_events():
 @login_required
 def add_event():
     try:
-        data  = request.get_json()
+        data = request.get_json()
         title = data.get("title", "").strip()
-        date  = data.get("date", "").strip()
+        date = data.get("date", "").strip()
         if not title or not date:
             return jsonify({"error": "title et date sont requis"}), 400
-        datetime.fromisoformat(date)  # valide le format
+        datetime.fromisoformat(date)
         events = load_json(EVENTS_FILE)
         events.append({
-            "id":    str(datetime.now().timestamp()),
+            "id": str(datetime.now().timestamp()),
             "title": title,
-            "date":  date,
+            "date": date,
         })
         save_json(EVENTS_FILE, events)
         return jsonify({"status": "ok"})
@@ -175,6 +176,7 @@ def delete_event(event_id):
 # ══════════════════════════════════════
 # MÉTÉO — Open-Meteo (gratuit, sans clé)
 # ══════════════════════════════════════
+
 @app.route("/api/weather")
 @login_required
 def get_weather():
@@ -182,37 +184,37 @@ def get_weather():
         res = requests.get(
             "https://api.open-meteo.com/v1/forecast",
             params={
-                "latitude":      43.6108,
-                "longitude":     3.8767,
-                "current":       "temperature_2m,weathercode,windspeed_10m,relativehumidity_2m,apparent_temperature",
-                "daily":         "weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum",
-                "timezone":      "Europe/Paris",
+                "latitude": 43.6108,
+                "longitude": 3.8767,
+                "current": "temperature_2m,weathercode,windspeed_10m,relativehumidity_2m,apparent_temperature",
+                "daily": "weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum",
+                "timezone": "Europe/Paris",
                 "forecast_days": 5,
             },
             timeout=10,
         )
         res.raise_for_status()
-        data    = res.json()
+        data = res.json()
         current = data.get("current", {})
-        daily   = data.get("daily", {})
+        daily = data.get("daily", {})
         days_fr = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
         forecast = []
         for i in range(min(5, len(daily.get("time", [])))):
             dt = datetime.fromisoformat(daily["time"][i])
             forecast.append({
-                "day":  "Auj." if i == 0 else days_fr[dt.weekday()],
+                "day": "Auj." if i == 0 else days_fr[dt.weekday()],
                 "code": daily["weathercode"][i],
-                "max":  round(daily["temperature_2m_max"][i]),
-                "min":  round(daily["temperature_2m_min"][i]),
+                "max": round(daily["temperature_2m_max"][i]),
+                "min": round(daily["temperature_2m_min"][i]),
                 "rain": round(daily.get("precipitation_sum", [0] * 5)[i], 1),
             })
         return jsonify({
-            "temp":       round(current.get("temperature_2m", 0)),
+            "temp": round(current.get("temperature_2m", 0)),
             "feels_like": round(current.get("apparent_temperature", 0)),
-            "code":       current.get("weathercode", 0),
-            "wind":       round(current.get("windspeed_10m", 0)),
-            "humidity":   round(current.get("relativehumidity_2m", 0)),
-            "forecast":   forecast,
+            "code": current.get("weathercode", 0),
+            "wind": round(current.get("windspeed_10m", 0)),
+            "humidity": round(current.get("relativehumidity_2m", 0)),
+            "forecast": forecast,
         })
     except requests.RequestException as e:
         logger.error("Erreur météo (réseau) : %s", e)
@@ -223,13 +225,7 @@ def get_weather():
 
 # ══════════════════════════════════════
 # TRAM — GTFS-RT TAM Montpellier
-# Flux protobuf officiel, sans clé API
-# 2 arrêts surveillés : Albert 1er + Louis Blanc
 # ══════════════════════════════════════
-
-
-# configuration
-logger = logging.getLogger(__name__)
 
 TAM_COLORS = {
     "1": "#009FE3", "2": "#E2001A", "3": "#00A550", "4": "#8B5CA5",
@@ -242,6 +238,15 @@ GTFS_RT_URLS = [
 ]
 
 WATCHED_STOPS = [
+    {
+        "id": "albert_saint_charles",
+        "label": "Albert 1er — Saint-Charles",
+        "stop_ids": {"1196", "1221"},
+        # IDs déduits du pattern GTFS-RT (séquence 1220‑1221‑1222‑1223 confirmée).
+        # Si l'arrêt n'apparaît pas, vérifier via /api/tram/debug et ajuster ces IDs.
+        "direction_by_id": {"1196": "→ Odysseum", "1221": "→ Mosson"},
+        "patterns": ["SAINT-CHARLES", "SAINT CHARLES"],
+    },
     {
         "id": "albert_1er",
         "label": "Albert 1er — Jardin des plantes",
@@ -258,19 +263,18 @@ WATCHED_STOPS = [
     },
 ]
 
-# gestionnaire de données avec cache
+
 class TramService:
     def __init__(self):
         self.session = requests.Session()
         self._cache = None
         self._cache_time = 0
-        self.CACHE_TTL = 60  # secondes
+        self.CACHE_TTL = 60
 
     def fetch_feed(self):
         now = time.time()
         if self._cache and (now - self._cache_time < self.CACHE_TTL):
             return self._cache
-
         headers = {"User-Agent": "Mozilla/5.0 (dashboard/2.0)"}
         for url in GTFS_RT_URLS:
             try:
@@ -285,8 +289,8 @@ class TramService:
                 logger.warning("source %s indisponible (réseau/http) : %s", url, e)
             except Exception as e:
                 logger.warning("source %s indisponible (parse) : %s", url, e)
-        
-        if self._cache: return self._cache
+        if self._cache:
+            return self._cache
         raise RuntimeError("aucune source de données gtfs-rt disponible")
 
     def normalize_line(self, route_id):
@@ -297,14 +301,14 @@ class TramService:
                 break
         return raw.lstrip("0") or "?"
 
-# instance unique du service
+
 tram_service = TramService()
+
 
 def _process_passages(feed):
     now = datetime.now().astimezone()
     results = {stop["id"]: {"label": stop["label"], "passages": []} for stop in WATCHED_STOPS}
 
-    # Index pour éviter de boucler WATCHED_STOPS à chaque stop_time_update
     stop_by_sid = {}
     pattern_stops = []
     for stop_cfg in WATCHED_STOPS:
@@ -313,23 +317,20 @@ def _process_passages(feed):
         patterns = [p.upper() for p in stop_cfg.get("patterns", []) if p]
         if patterns:
             pattern_stops.append((patterns, stop_cfg))
-    
-    for entity in feed.entity:
-        if not entity.HasField("trip_update"): continue
-        
-        tu = entity.trip_update
-        # ignore les trajets annulés
-        if getattr(tu.trip, "schedule_relationship", 0) == 3: continue
 
+    for entity in feed.entity:
+        if not entity.HasField("trip_update"):
+            continue
+        tu = entity.trip_update
+        if getattr(tu.trip, "schedule_relationship", 0) == 3:
+            continue
         line = tram_service.normalize_line(tu.trip.route_id)
         headsign = getattr(tu.trip, "trip_headsign", "")
 
         for stu in tu.stop_time_update:
             sid = str(stu.stop_id)
-
             stop_cfg = stop_by_sid.get(sid)
             if stop_cfg is None and pattern_stops:
-                # secours: certains feeds peuvent fournir un stop_id "non standard"
                 sid_u = sid.upper()
                 for patterns, cfg in pattern_stops:
                     if any(p in sid_u for p in patterns):
@@ -341,7 +342,6 @@ def _process_passages(feed):
             event = stu.departure if stu.HasField("departure") else stu.arrival
             if not event:
                 continue
-
             ev_time = getattr(event, "time", 0) or 0
             if not ev_time:
                 continue
@@ -359,9 +359,10 @@ def _process_passages(feed):
                 "direction": dest,
                 "minutes": diff,
                 "time": depart.strftime("%H:%M"),
-                "realtime": delay != 0
+                "realtime": delay != 0,
             })
     return results
+
 
 @app.route("/api/tram")
 @login_required
@@ -370,23 +371,17 @@ def get_tram():
         feed = tram_service.fetch_feed()
         data = _process_passages(feed)
 
-        # nettoyage, tri et dédoublonnage par arrêt
         for stop_id in data:
             unique_passages = []
             seen_keys = set()
-            
-            # tri par temps d'attente
             sorted_p = sorted(data[stop_id]["passages"], key=lambda x: x["minutes"])
-            
             for p in sorted_p:
                 key = (p["line"], p["direction"], p["minutes"], p["time"])
                 if key not in seen_keys:
                     seen_keys.add(key)
                     unique_passages.append(p)
-            
             data[stop_id]["passages"] = unique_passages[:6]
 
-        # Aplatir au format attendu par le front : liste de passages avec champ `stop`
         flat = []
         for stop_id in WATCHED_STOPS:
             sid = stop_id["id"]
@@ -394,15 +389,14 @@ def get_tram():
             for p in data.get(sid, {}).get("passages", []):
                 flat.append({**p, "stop": stop_label})
 
-        # tri final : arrêt puis minutes
         flat.sort(key=lambda x: (x.get("stop", ""), x.get("minutes", 999)))
         return jsonify(flat)
-
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
-        logger.error(f"erreur tram : {e}")
+        logger.error("erreur tram : %s", e)
         return jsonify({"error": "erreur interne"}), 500
+
 
 @app.route("/api/tram/debug")
 @login_required
@@ -422,116 +416,117 @@ def debug_tram():
 
 # ══════════════════════════════════════
 # ACTUALITÉS IA — Flux RSS natifs
+# Fetch parallèle + cache 15 min
 # ══════════════════════════════════════
-# Catégories : recherche, produits, réglementation/droit, éthique, business
+
 AI_FEEDS = {
     # ── Recherche & technique ────────────────────────────────────
     "MIT Tech Review": {
-        "url":  "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",
+        "url": "https://news.mit.edu/topic/mitartificial-intelligence2-rss.xml",
         "icon": "🔬",
     },
     "Hugging Face": {
-        "url":  "https://huggingface.co/blog/feed.xml",
+        "url": "https://huggingface.co/blog/feed.xml",
         "icon": "🤗",
     },
     "DeepMind": {
-        "url":  "https://deepmind.google/blog/rss.xml",
+        "url": "https://deepmind.google/blog/rss.xml",
         "icon": "🧬",
     },
     "Google AI": {
-        "url":  "https://blog.research.google/feeds/posts/default?alt=rss",
+        "url": "https://blog.research.google/feeds/posts/default?alt=rss",
         "icon": "🔵",
     },
     "Meta AI": {
-        "url":  "https://ai.meta.com/blog/rss/",
+        "url": "https://ai.meta.com/blog/rss/",
         "icon": "🟦",
     },
     "Papers With Code": {
-        "url":  "https://paperswithcode.com/latest.rss",
+        "url": "https://paperswithcode.com/latest.rss",
         "icon": "📄",
     },
     # ── Labs & modèles ───────────────────────────────────────────
     "Anthropic": {
-        "url":  "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_claude.xml",
+        "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_claude.xml",
         "icon": "🧠",
     },
     "OpenAI": {
-        "url":  "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_openai_research.xml",
+        "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_openai_research.xml",
         "icon": "✦",
     },
     "Mistral AI": {
-        "url":  "https://mistral.ai/news/rss.xml",
+        "url": "https://mistral.ai/news/rss.xml",
         "icon": "💨",
     },
     "Cohere": {
-        "url":  "https://cohere.com/blog/rss",
+        "url": "https://cohere.com/blog/rss",
         "icon": "🔷",
     },
     # ── Actualités tech & IA ─────────────────────────────────────
     "The Verge AI": {
-        "url":  "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+        "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
         "icon": "⚡",
     },
     "VentureBeat IA": {
-        "url":  "https://venturebeat.com/category/ai/feed/",
+        "url": "https://venturebeat.com/category/ai/feed/",
         "icon": "📡",
     },
     "Wired AI": {
-        "url":  "https://www.wired.com/feed/tag/artificial-intelligence/latest/rss",
+        "url": "https://www.wired.com/feed/tag/artificial-intelligence/latest/rss",
         "icon": "🌐",
     },
     "TechCrunch AI": {
-        "url":  "https://techcrunch.com/category/artificial-intelligence/feed/",
+        "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
         "icon": "🚀",
     },
     "Ars Technica AI": {
-        "url":  "https://feeds.arstechnica.com/arstechnica/technology-lab",
+        "url": "https://feeds.arstechnica.com/arstechnica/technology-lab",
         "icon": "🖥",
     },
     "Import AI": {
-        "url":  "https://importai.substack.com/feed",
+        "url": "https://importai.substack.com/feed",
         "icon": "📨",
     },
     "The Batch (DeepLearning.AI)": {
-        "url":  "https://read.deeplearning.ai/the-batch/rss/",
+        "url": "https://read.deeplearning.ai/the-batch/rss/",
         "icon": "📦",
     },
     # ── Réglementation, droit & politique ────────────────────────
     "AI Policy (Future of Life)": {
-        "url":  "https://futureoflife.org/feed/",
+        "url": "https://futureoflife.org/feed/",
         "icon": "⚖️",
     },
     "European Parliament AI": {
-        "url":  "https://www.europarl.europa.eu/rss/doc/news-articles/en.rss",
+        "url": "https://www.europarl.europa.eu/rss/doc/news-articles/en.rss",
         "icon": "🇪🇺",
     },
     "CNIL": {
-        "url":  "https://www.cnil.fr/fr/rss.xml",
+        "url": "https://www.cnil.fr/fr/rss.xml",
         "icon": "🛡",
     },
     "AI Now Institute": {
-        "url":  "https://ainowinstitute.org/feed",
+        "url": "https://ainowinstitute.org/feed",
         "icon": "📜",
     },
     "Stanford HAI": {
-        "url":  "https://hai.stanford.edu/news/rss.xml",
+        "url": "https://hai.stanford.edu/news/rss.xml",
         "icon": "🏛",
     },
     "Brookings AI": {
-        "url":  "https://www.brookings.edu/topic/artificial-intelligence/feed/",
+        "url": "https://www.brookings.edu/topic/artificial-intelligence/feed/",
         "icon": "🏦",
     },
     # ── Éthique & société ────────────────────────────────────────
     "AlgorithmWatch": {
-        "url":  "https://algorithmwatch.org/en/feed/",
+        "url": "https://algorithmwatch.org/en/feed/",
         "icon": "🔍",
     },
     "Partnership on AI": {
-        "url":  "https://partnershiponai.org/feed/",
+        "url": "https://partnershiponai.org/feed/",
         "icon": "🤝",
     },
     "Mozilla Foundation AI": {
-        "url":  "https://foundation.mozilla.org/en/feed/blog/",
+        "url": "https://foundation.mozilla.org/en/feed/blog/",
         "icon": "🦊",
     },
 }
@@ -544,51 +539,77 @@ RSS_HEADERS = {
     )
 }
 
+# Cache partagé pour les actualités
+_NEWS_CACHE: dict = {"data": [], "ts": 0.0}
+NEWS_CACHE_TTL = 900  # 15 minutes
+
+
+def _fetch_one_feed(source: str, meta: dict, now: datetime) -> list:
+    """Récupère un flux RSS et retourne la liste d'articles filtrés."""
+    results = []
+    try:
+        res = requests.get(meta["url"], headers=RSS_HEADERS, timeout=8)
+        feed = feedparser.parse(res.text)
+        for entry in feed.entries[:2]:
+            published = entry.get("published_parsed") or entry.get("updated_parsed")
+            # FIX : ignorer les articles sans date (évite le tri erroné)
+            if not published:
+                continue
+            dt = datetime(*published[:6])
+            diff = now - dt
+            if diff.days > 7:
+                continue
+            if diff.days > 0:
+                time_str = f"il y a {diff.days}j"
+            elif diff.seconds > 3600:
+                time_str = f"il y a {diff.seconds // 3600}h"
+            else:
+                time_str = f"il y a {diff.seconds // 60}min"
+            title = entry.get("title", "Sans titre")
+            summary = re.sub(r"<[^>]+>", "", entry.get("summary", ""))[:160]
+            results.append({
+                "source": source,
+                "icon": meta["icon"],
+                "title": title,
+                "summary": summary,
+                "time": time_str,
+                "link": entry.get("link", ""),
+                "_dt": dt.isoformat(),
+            })
+    except Exception as e:
+        logger.warning("Erreur flux %s : %s", source, e)
+    return results
+
+
 @app.route("/api/news")
 @login_required
 def get_news():
+    global _NEWS_CACHE
+    now = datetime.now()
+
+    # Servir le cache si encore valide
+    if _NEWS_CACHE["data"] and (time.time() - _NEWS_CACHE["ts"] < NEWS_CACHE_TTL):
+        return jsonify(_NEWS_CACHE["data"])
+
+    # Fetch parallèle de tous les flux
     articles = []
-    now      = datetime.now()
-
-    for source, meta in AI_FEEDS.items():
-        try:
-            res  = requests.get(meta["url"], headers=RSS_HEADERS, timeout=8)
-            feed = feedparser.parse(res.text)
-            for entry in feed.entries[:2]:
-                published = entry.get("published_parsed") or entry.get("updated_parsed")
-                if published:
-                    dt   = datetime(*published[:6])
-                    diff = now - dt
-                    if diff.days > 7:
-                        continue
-                    if diff.days > 0:
-                        time_str = f"il y a {diff.days}j"
-                    elif diff.seconds > 3600:
-                        time_str = f"il y a {diff.seconds // 3600}h"
-                    else:
-                        time_str = f"il y a {diff.seconds // 60}min"
-                else:
-                    time_str = ""
-                    dt = now
-
-                title   = entry.get("title", "Sans titre")
-                summary = re.sub(r"<[^>]+>", "", entry.get("summary", ""))[:160]
-
-                articles.append({
-                    "source":  source,
-                    "icon":    meta["icon"],
-                    "title":   title,
-                    "summary": summary,
-                    "time":    time_str,
-                    "link":    entry.get("link", ""),
-                    "_dt":     dt.isoformat(),
-                })
-        except Exception as e:
-            logger.warning("Erreur flux %s : %s", source, e)
-            continue
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = {
+            executor.submit(_fetch_one_feed, source, meta, now): source
+            for source, meta in AI_FEEDS.items()
+        }
+        for future in as_completed(futures):
+            try:
+                articles.extend(future.result())
+            except Exception as e:
+                logger.warning("Erreur future flux : %s", e)
 
     articles.sort(key=lambda x: x.pop("_dt", ""), reverse=True)
-    return jsonify(articles[:12])
+    result = articles[:12]
+
+    _NEWS_CACHE = {"data": result, "ts": time.time()}
+    return jsonify(result)
+
 
 # Alias rétrocompatibilité
 @app.route("/api/twitter")
@@ -599,6 +620,7 @@ def get_twitter():
 # ══════════════════════════════════════
 # POINT D'ENTRÉE (dev local uniquement)
 # ══════════════════════════════════════
+
 if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     app.run(

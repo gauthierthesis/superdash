@@ -1,21 +1,36 @@
+# ─── Environnement ────────────────────────────────────
 .env
+.env.local
+.env.*.local
+
+# ─── Python ───────────────────────────────────────────
 .venv/
+venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
+*.egg-info/
+dist/
+build/
 
-# macOS Finder / resource forks
-.DS_Store
-._*
-
-# Local data (ephemeral on Render)
+# ─── Données locales (éphémères sur Render) ───────────
+data/
 data/*.json
 
-# Node / frontend artifacts (not used by Flask runtime here)
-node_modules/
+# ─── macOS ────────────────────────────────────────────
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
 
-# IDE / assistant tooling
+# ─── IDE / outils ─────────────────────────────────────
 .claude/
+.idea/
+.vscode/
+*.swp
+*.swo
 
+# ─── Node / frontend (non utilisé en runtime Flask) ───
+node_modules/

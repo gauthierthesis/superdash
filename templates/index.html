@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    /* ─── Variables ──────────────────────────────── */
+    /* ─── Variables — Light ───────────────────────── */
     :root {
       --bg:#F7F4EF;--surface:#FFF;--border:#E2DDD6;
       --text-primary:#1A1714;--text-secondary:#6B6560;--text-muted:#A09A94;
@@ -17,17 +17,27 @@
       --font-display:'Playfair Display',Georgia,serif;
       --font-body:'DM Sans',sans-serif;
       --font-mono:'DM Mono',monospace;
+      --shadow:0 2px 12px rgba(0,0,0,.06);
+    }
+    /* ─── Variables — Dark ────────────────────────── */
+    [data-theme="dark"] {
+      --bg:#18161A;--surface:#232027;--border:#332F38;
+      --text-primary:#EDE8F8;--text-secondary:#A09A94;--text-muted:#6B6560;
+      --violet:#B39DDB;--violet-light:#2D2540;--violet-mid:#5D4A8A;
+      --green:#7DC4A0;--green-light:#1A2E22;--green-mid:#2A5A3A;
+      --red:#EF5350;--red-bg:#2E1A1A;--yellow:#FFB300;--yellow-bg:#2E2A10;--ok:#66BB6A;--ok-bg:#1A2E1A;
+      --shadow:0 2px 12px rgba(0,0,0,.25);
     }
     *{margin:0;padding:0;box-sizing:border-box;}
-    body{background:var(--bg);font-family:var(--font-body);color:var(--text-primary);height:100vh;overflow:hidden;display:flex;flex-direction:column;user-select:none;}
+    body{background:var(--bg);font-family:var(--font-body);color:var(--text-primary);height:100vh;overflow:hidden;display:flex;flex-direction:column;user-select:none;transition:background .25s,color .25s;}
 
     /* ─── Header ─────────────────────────────────── */
-    header{display:flex;align-items:center;justify-content:space-between;padding:9px 18px 9px 16px;border-bottom:2px solid var(--text-primary);background:var(--bg);flex-shrink:0;gap:10px;}
+    header{display:flex;align-items:center;justify-content:space-between;padding:9px 18px 9px 16px;border-bottom:2px solid var(--text-primary);background:var(--bg);flex-shrink:0;gap:10px;transition:background .25s,border-color .25s;}
     .header-left{display:flex;align-items:baseline;gap:14px;flex-shrink:0;}
     .header-title{font-family:var(--font-display);font-size:19px;font-weight:900;letter-spacing:-.5px;}
     .header-subtitle{font-size:10px;font-weight:500;color:var(--text-muted);letter-spacing:2.5px;text-transform:uppercase;}
     .header-center{display:flex;align-items:center;gap:5px;flex-wrap:wrap;flex:1;justify-content:center;}
-    .header-right{display:flex;align-items:baseline;gap:14px;flex-shrink:0;}
+    .header-right{display:flex;align-items:center;gap:10px;flex-shrink:0;}
     #clock{font-family:var(--font-display);font-size:25px;font-weight:700;letter-spacing:-1px;line-height:1;}
     #date-display{font-size:12px;color:var(--text-secondary);text-transform:capitalize;}
 
@@ -40,10 +50,14 @@
     .btn-config{padding:3px 10px;border-radius:20px;font-size:10px;font-weight:500;border:1px solid var(--border);background:var(--surface);color:var(--text-secondary);cursor:pointer;transition:all .15s;letter-spacing:.5px;}
     .btn-config:hover{border-color:var(--violet);color:var(--violet);}
 
+    /* Dark mode toggle */
+    .btn-theme{width:30px;height:30px;border-radius:50%;border:1px solid var(--border);background:var(--surface);color:var(--text-secondary);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0;}
+    .btn-theme:hover{border-color:var(--violet);background:var(--violet-light);}
+
     /* ─── Grid ───────────────────────────────────── */
     main{flex:1;display:grid;overflow:hidden;transition:grid-template-columns .3s,grid-template-rows .3s;position:relative;}
 
-    /* ─── Séparateurs de grille redimensionnables ────── */
+    /* ─── Séparateurs de grille ──────────────────── */
     .grid-splitter{position:absolute;z-index:10;}
     .col-splitter{cursor:col-resize;top:0;height:100%;width:8px;transform:translateX(-50%);}
     .row-splitter{cursor:row-resize;left:0;width:100%;height:8px;transform:translateY(-50%);}
@@ -55,7 +69,7 @@
     main.layout-compact{grid-template-columns:1fr 240px 210px;grid-template-rows:1fr 1fr 155px;}
 
     /* ─── Widget base ────────────────────────────── */
-    .widget{border-right:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;overflow:hidden;opacity:0;animation:fadeUp .35s ease forwards;position:relative;min-height:0;}
+    .widget{border-right:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;overflow:hidden;opacity:0;animation:fadeUp .35s ease forwards;position:relative;min-height:0;transition:background .25s,border-color .25s;}
     .widget.widget-hidden{display:none;}
     #widget-twitter {animation-delay:.05s;grid-row:1/3;}
     #widget-weather {animation-delay:.10s;}
@@ -63,7 +77,6 @@
     #widget-calendar{animation-delay:.20s;grid-column:2/4;border-right:none;}
     #widget-todo    {animation-delay:.25s;grid-column:1/-1;border-right:none;border-bottom:none;background:var(--bg);}
     @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-
     .widget[data-size="s"]{font-size:.88em;}
     .widget[data-size="l"]{font-size:1.06em;}
 
@@ -80,6 +93,11 @@
     .wctrl{width:20px;height:20px;border-radius:4px;border:1px solid var(--border);background:var(--surface);color:var(--text-muted);font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;line-height:1;}
     .wctrl:hover{border-color:var(--violet);color:var(--violet);background:var(--violet-light);}
     .wctrl.hide-btn:hover{border-color:var(--red);color:var(--red);background:var(--red-bg);}
+    /* Refresh button */
+    .wctrl.refresh-btn{font-size:11px;}
+    .wctrl.refresh-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-light);}
+    .wctrl.refresh-btn.spinning{animation:spin .7s linear infinite;}
+    @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
     /* ─── Widget body ────────────────────────────── */
     .widget-body{flex:1;overflow-y:auto;padding:12px 16px;scrollbar-width:thin;scrollbar-color:var(--border) transparent;}
@@ -146,24 +164,38 @@
     .forecast-min{color:var(--text-muted);}
 
     /* ─── Tram ───────────────────────────────────── */
-    .tram-stop-name{font-size:10px;color:var(--text-secondary);margin-bottom:8px;}
+    .tram-stop-block{margin-bottom:6px;}
+    .tram-stop-block:last-child{margin-bottom:0;}
+    .tram-stop-name{font-size:9px;color:var(--text-secondary);margin-bottom:5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;display:flex;align-items:center;gap:5px;}
+    .tram-stop-name::before{content:'';display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--violet);flex-shrink:0;}
     .tram-banner{font-size:10px;color:var(--yellow);background:var(--yellow-bg);border:1px solid var(--yellow);border-radius:5px;padding:6px 9px;margin-bottom:8px;line-height:1.5;}
     .tram-banner a{color:inherit;}
-    .tram-passage{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);transition:background .15s;}
+    .tram-passage{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);transition:background .15s;}
     .tram-passage:last-child{border-bottom:none;}
-    .tram-passage:hover{background:var(--violet-light);margin:0 -16px;padding:7px 16px;border-radius:4px;}
-    .tram-left{display:flex;align-items:center;gap:9px;}
-    .tram-line-badge{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;color:white;font-size:12px;font-weight:700;font-family:var(--font-mono);flex-shrink:0;box-shadow:0 2px 6px rgba(0,0,0,.18);}
+    .tram-passage:hover{background:var(--violet-light);margin:0 -16px;padding:5px 16px;border-radius:4px;}
+    /* Badge clignotant pour les trams imminents (≤2 min) */
+    .tram-passage.imminent .tram-minutes{animation:urgentPulse 1s ease-in-out infinite;}
+    @keyframes urgentPulse{0%,100%{opacity:1}50%{opacity:.55}}
+    .tram-left{display:flex;align-items:center;gap:8px;}
+    .tram-line-badge{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:5px;color:white;font-size:11px;font-weight:700;font-family:var(--font-mono);flex-shrink:0;box-shadow:0 2px 5px rgba(0,0,0,.18);}
     .tram-direction{font-size:11px;font-weight:500;}
     .tram-realtime{font-size:9px;color:var(--green);}
     .tram-theoretical{font-size:9px;color:var(--text-muted);}
-    .tram-minutes{font-family:var(--font-mono);font-size:15px;font-weight:700;text-align:right;padding:3px 7px;border-radius:5px;}
+    .tram-minutes{font-family:var(--font-mono);font-size:14px;font-weight:700;text-align:right;padding:2px 6px;border-radius:4px;}
     .tram-minutes.urgent {color:var(--red);background:var(--red-bg);}
     .tram-minutes.warning{color:var(--yellow);background:var(--yellow-bg);}
     .tram-minutes.ok     {color:var(--ok);background:var(--ok-bg);}
-    .tram-time-label{font-size:10px;color:var(--text-muted);text-align:right;margin-top:2px;}
+    .tram-time-label{font-size:9px;color:var(--text-muted);text-align:right;margin-top:1px;}
+    .tram-stop-sep{border:none;border-top:1px dashed var(--border);margin:7px -16px;}
+    .tram-empty{font-size:10px;color:var(--text-muted);font-style:italic;padding:4px 0;}
 
     /* ─── Actualités ─────────────────────────────── */
+    /* Skeleton loader */
+    .news-skeleton{padding:9px 0;border-bottom:1px solid var(--border);}
+    .skel{height:10px;border-radius:4px;background:linear-gradient(90deg,var(--border) 25%,var(--bg) 50%,var(--border) 75%);background-size:200% 100%;animation:shimmer 1.3s infinite;}
+    .skel.skel-title{height:12px;width:80%;margin-bottom:5px;}
+    .skel.skel-sub{width:50%;}
+    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .news-item{display:flex;gap:11px;padding:9px 0;border-bottom:1px solid var(--border);transition:background .15s;cursor:pointer;text-decoration:none;color:inherit;}
     .news-item:last-child{border-bottom:none;}
     .news-item:hover{background:var(--green-light);margin:0 -16px;padding:9px 16px;border-radius:4px;}
@@ -174,6 +206,8 @@
     .news-time{font-size:10px;color:var(--text-muted);font-family:var(--font-mono);}
     .news-title{font-size:12px;font-weight:600;line-height:1.35;margin-bottom:2px;}
     .news-summary{font-size:11px;color:var(--text-secondary);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    /* Cache badge */
+    .cache-badge{display:inline-flex;align-items:center;gap:3px;font-size:9px;color:var(--text-muted);font-family:var(--font-mono);background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:1px 6px;margin-left:4px;}
 
     /* ─── Calendrier ─────────────────────────────── */
     #widget-calendar .widget-body{padding:10px 16px;}
@@ -191,17 +225,20 @@
     .cal-week-day-name{font-size:9px;color:var(--text-muted);text-align:center;padding:2px 0;}
     .cal-week-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:11px;border-radius:4px;}
     .cal-week-day.today{background:var(--violet);color:white;font-weight:700;border-radius:50%;}
+    /* FIX : "Voir plus" si > 5 events */
+    .cal-more{font-size:10px;color:var(--violet);cursor:pointer;margin:4px 0 0;background:none;border:none;font-family:var(--font-body);padding:0;}
+    .cal-more:hover{text-decoration:underline;}
     .cal-add-btn{display:flex;align-items:center;justify-content:center;gap:5px;background:none;border:1px solid var(--border);border-radius:5px;padding:5px 10px;width:100%;font-family:var(--font-body);font-size:11px;color:var(--text-secondary);cursor:pointer;transition:all .15s;margin-top:8px;}
     .cal-add-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-light);}
 
     /* ─── Modal ──────────────────────────────────── */
-    .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:100;align-items:center;justify-content:center;}
+    .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:100;align-items:center;justify-content:center;}
     .modal-overlay.open{display:flex;}
-    .modal{background:white;border-radius:12px;padding:24px;width:320px;box-shadow:0 20px 60px rgba(0,0,0,.12);}
+    .modal{background:var(--surface);border-radius:12px;padding:24px;width:320px;box-shadow:0 20px 60px rgba(0,0,0,.2);border:1px solid var(--border);}
     .modal-title{font-family:var(--font-display);font-size:17px;font-weight:700;margin-bottom:16px;}
     .modal-field{margin-bottom:12px;}
     .modal-field label{display:block;font-size:10px;color:var(--text-muted);margin-bottom:4px;letter-spacing:1px;text-transform:uppercase;}
-    .modal-field input{width:100%;border:1px solid var(--border);border-radius:6px;padding:7px 11px;font-family:var(--font-body);font-size:13px;color:var(--text-primary);outline:none;transition:border-color .15s;}
+    .modal-field input{width:100%;border:1px solid var(--border);border-radius:6px;padding:7px 11px;font-family:var(--font-body);font-size:13px;color:var(--text-primary);background:var(--bg);outline:none;transition:border-color .15s;}
     .modal-field input:focus{border-color:var(--violet);}
     .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;}
     .btn-cancel{background:none;border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-family:var(--font-body);font-size:12px;color:var(--text-secondary);cursor:pointer;}
@@ -228,15 +265,15 @@
     .todo-item:hover .todo-delete{opacity:1;}
 
     /* ─── Panel config ───────────────────────────── */
-    #config-panel{display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.25);align-items:center;justify-content:center;}
+    #config-panel{display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.35);align-items:center;justify-content:center;}
     #config-panel.open{display:flex;}
-    .config-box{background:white;border-radius:14px;padding:24px 28px;width:390px;box-shadow:0 24px 64px rgba(0,0,0,.14);}
+    .config-box{background:var(--surface);border-radius:14px;padding:24px 28px;width:390px;box-shadow:0 24px 64px rgba(0,0,0,.2);border:1px solid var(--border);}
     .config-title{font-family:var(--font-display);font-size:18px;font-weight:700;margin-bottom:3px;}
     .config-subtitle{font-size:11px;color:var(--text-muted);margin-bottom:18px;}
     .config-section{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin:14px 0 8px;}
     .layout-btns{display:flex;gap:6px;flex-wrap:wrap;}
     .btn-layout{padding:4px 12px;border-radius:20px;font-size:10px;font-weight:500;border:1px solid var(--border);background:var(--bg);color:var(--text-secondary);cursor:pointer;transition:all .15s;letter-spacing:.5px;}
-    .btn-layout.active{background:var(--text-primary);color:white;border-color:var(--text-primary);}
+    .btn-layout.active{background:var(--text-primary);color:var(--bg);border-color:var(--text-primary);}
     .btn-layout:hover:not(.active){border-color:var(--violet);color:var(--violet);}
     .config-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);}
     .config-row:last-of-type{border-bottom:none;}
@@ -250,7 +287,7 @@
     .toggle-sw::after{content:'';position:absolute;width:14px;height:14px;border-radius:50%;background:white;top:3px;left:3px;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.2);}
     .toggle-sw.on{background:var(--violet);}
     .toggle-sw.on::after{transform:translateX(16px);}
-    .config-close{width:100%;margin-top:18px;padding:9px;background:var(--text-primary);color:white;border:none;border-radius:7px;font-family:var(--font-body);font-size:13px;font-weight:500;cursor:pointer;transition:background .15s;}
+    .config-close{width:100%;margin-top:18px;padding:9px;background:var(--text-primary);color:var(--bg);border:none;border-radius:7px;font-family:var(--font-body);font-size:13px;font-weight:500;cursor:pointer;transition:background .15s;}
     .config-close:hover{background:var(--violet);}
   </style>
 </head>
@@ -263,9 +300,10 @@
   </div>
   <div class="header-center" id="widget-toggles"></div>
   <div class="header-right">
-    <button class="btn-config" onclick="openConfig()">⚙ Configurer</button>
     <span id="date-display"></span>
     <span id="clock"></span>
+    <button class="btn-theme" id="btn-theme" onclick="toggleTheme()" title="Mode sombre / clair">🌙</button>
+    <button class="btn-config" onclick="openConfig()">⚙ Configurer</button>
   </div>
 </header>
 
@@ -276,14 +314,20 @@
       <div class="widget-header-left">
         <span class="widget-label">— Actualités IA</span>
         <div class="status-dot off" id="news-status"></div>
+        <span class="cache-badge" id="news-cache-badge" style="display:none">cache</span>
       </div>
       <div class="widget-controls">
+        <button class="wctrl refresh-btn" id="news-refresh-btn" onclick="refreshNews()" title="Actualiser">↻</button>
         <button class="wctrl" onclick="resizeWidget('widget-twitter','s')" title="Compact">−</button>
         <button class="wctrl" onclick="resizeWidget('widget-twitter','l')" title="Large">+</button>
         <button class="wctrl hide-btn" onclick="toggleWidget('widget-twitter')" title="Masquer">×</button>
       </div>
     </div>
-    <div class="widget-body" id="news-feed"><p class="loading">Chargement…</p></div>
+    <div class="widget-body" id="news-feed">
+      <div class="news-skeleton"><div class="skel skel-title"></div><div class="skel skel-sub"></div></div>
+      <div class="news-skeleton"><div class="skel skel-title"></div><div class="skel skel-sub"></div></div>
+      <div class="news-skeleton"><div class="skel skel-title"></div><div class="skel skel-sub"></div></div>
+    </div>
   </div>
 
   <div class="widget" id="widget-weather" data-size="m" data-label="Météo">
@@ -293,6 +337,7 @@
         <div class="status-dot" id="weather-status"></div>
       </div>
       <div class="widget-controls">
+        <button class="wctrl refresh-btn" onclick="loadWeather()" title="Actualiser">↻</button>
         <button class="wctrl" onclick="resizeWidget('widget-weather','s')" title="Compact">−</button>
         <button class="wctrl" onclick="resizeWidget('widget-weather','l')" title="Large">+</button>
         <button class="wctrl hide-btn" onclick="toggleWidget('widget-weather')" title="Masquer">×</button>
@@ -308,13 +353,13 @@
         <div class="status-dot" id="tram-status"></div>
       </div>
       <div class="widget-controls">
+        <button class="wctrl refresh-btn" id="tram-refresh-btn" onclick="refreshTram()" title="Actualiser">↻</button>
         <button class="wctrl" onclick="resizeWidget('widget-tram','s')" title="Compact">−</button>
         <button class="wctrl" onclick="resizeWidget('widget-tram','l')" title="Large">+</button>
         <button class="wctrl hide-btn" onclick="toggleWidget('widget-tram')" title="Masquer">×</button>
       </div>
     </div>
     <div class="widget-body" id="tram-data">
-      <p class="tram-stop-name">Albert I — Jardin des plantes</p>
       <p class="loading">Chargement…</p>
     </div>
   </div>
@@ -403,6 +448,23 @@ const LABELS  = {'widget-twitter':'Actualités IA','widget-weather':'Météo','w
 function loadPrefs(){ try{return JSON.parse(localStorage.getItem('dash_prefs')||'{}')}catch{return{}} }
 function savePrefs(p){ localStorage.setItem('dash_prefs',JSON.stringify(p)) }
 
+// ── Dark mode ─────────────────────────────────────────
+function toggleTheme(){
+  const html=document.documentElement;
+  const isDark=html.dataset.theme==='dark';
+  html.dataset.theme=isDark?'light':'dark';
+  document.getElementById('btn-theme').textContent=isDark?'🌙':'☀️';
+  const p=loadPrefs(); p.theme=html.dataset.theme; savePrefs(p);
+}
+(function applyTheme(){
+  const p=loadPrefs();
+  if(p.theme==='dark'){
+    document.documentElement.dataset.theme='dark';
+    const btn=document.getElementById('btn-theme');
+    if(btn)btn.textContent='☀️';
+  }
+})();
+
 // ── Horloge ───────────────────────────────────────────
 function updateClock(){
   const n=new Date();
@@ -413,7 +475,7 @@ function updateClock(){
 }
 setInterval(updateClock,1000); updateClock();
 
-// ── Système modulable ─────────────────────────────────
+// ── Système de widgets ────────────────────────────────
 function toggleWidget(id){
   const el=document.getElementById(id);
   const p=loadPrefs();
@@ -435,7 +497,6 @@ function setLayout(name){
   requestAnimationFrame(()=>{ if(window._positionGridSplitters)window._positionGridSplitters(); });
 }
 
-// Boutons rapides header
 function buildToggles(){
   document.getElementById('widget-toggles').innerHTML=WIDGETS.map(id=>{
     const h=document.getElementById(id).classList.contains('widget-hidden');
@@ -449,7 +510,6 @@ function refreshToggles(){
   });
 }
 
-// Panel config
 function openConfig() { document.getElementById('config-panel').classList.add('open'); refreshConfigRows(); }
 function closeConfig(){ document.getElementById('config-panel').classList.remove('open'); }
 function refreshConfigRows(){
@@ -469,7 +529,6 @@ function refreshConfigRows(){
   }).join('');
 }
 
-// Appliquer les prefs sauvegardées
 (function(){
   const p=loadPrefs();
   WIDGETS.forEach(id=>{ if(p[id+'_hidden'])document.getElementById(id).classList.add('widget-hidden'); if(p[id+'_size'])document.getElementById(id).dataset.size=p[id+'_size']; });
@@ -478,13 +537,12 @@ function refreshConfigRows(){
 })();
 document.getElementById('config-panel').addEventListener('click',function(e){if(e.target===this)closeConfig();});
 
-// ── Redimensionnement de la grille par glisser-déposer ─
+// ── Redimensionnement de la grille ────────────────────
 (function initGridResize(){
   const grid=document.getElementById('main-grid');
   function parsePx(v){return parseFloat(v)||0;}
   function getColWidths(){return getComputedStyle(grid).gridTemplateColumns.split(' ').map(parsePx);}
   function getRowHeights(){return getComputedStyle(grid).gridTemplateRows.split(' ').map(parsePx);}
-
   function positionSplitters(){
     grid.querySelectorAll('.grid-splitter').forEach(s=>s.remove());
     const cols=getColWidths(),rows=getRowHeights();
@@ -507,7 +565,6 @@ document.getElementById('config-panel').addEventListener('click',function(e){if(
       grid.appendChild(s);
     }
   }
-
   function startDrag(e,type,idx,orig){
     e.preventDefault();
     const start=type==='col'?e.clientX:e.clientY;
@@ -541,7 +598,6 @@ document.getElementById('config-panel').addEventListener('click',function(e){if(
     document.addEventListener('mousemove',onMove);
     document.addEventListener('mouseup',onUp);
   }
-
   const p=loadPrefs();
   if(p.gridCols)grid.style.gridTemplateColumns=p.gridCols;
   if(p.gridRows)grid.style.gridTemplateRows=p.gridRows;
@@ -582,7 +638,7 @@ function esc(s){
 }
 function safeColor(c){
   const s=String(c??'');
-  return /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(s) ? s : '#6B6560';
+  return /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(s)?s:'#6B6560';
 }
 async function loadTram(){
   const container=document.getElementById('tram-data');
@@ -598,42 +654,76 @@ async function loadTram(){
       dot.classList.add('error'); return;
     }
     dot.classList.remove('error','off');
-    // Grouper par arrêt en conservant l'ordre d'apparition
     const byStop=new Map();
     data.forEach(p=>{if(!byStop.has(p.stop))byStop.set(p.stop,[]);byStop.get(p.stop).push(p);});
     container.innerHTML=[...byStop.entries()].map(([stop,passages],si)=>{
-      const rows=passages.map(p=>{
-        const cls=minClass(p.minutes);
-        const lbl=p.minutes===0?'À quai':`${p.minutes} min`;
-        return`<div class="tram-passage"><div class="tram-left"><div class="tram-line-badge" style="background:${safeColor(p.color)}">${esc(p.line)}</div><div><div class="tram-direction">${esc(p.direction)}</div><div class="${p.realtime?'tram-realtime':'tram-theoretical'}">${p.realtime?'● temps réel':'○ théorique'}</div></div></div><div><div class="tram-minutes ${cls}">${esc(lbl)}</div><div class="tram-time-label">${esc(p.time)}</div></div></div>`;
-      }).join('');
-      const sep=si>0?'<div style="border-top:1px solid var(--border);margin:6px -16px;"></div>':'';
-      return sep+`<p class="tram-stop-name">${esc(stop)}</p>`+rows;
+      const rows=passages.length
+        ? passages.map(p=>{
+            const cls=minClass(p.minutes);
+            const lbl=p.minutes===0?'À quai':`${p.minutes} min`;
+            const imm=p.minutes<=2?' imminent':'';
+            return`<div class="tram-passage${imm}"><div class="tram-left"><div class="tram-line-badge" style="background:${safeColor(p.color)}">${esc(p.line)}</div><div><div class="tram-direction">${esc(p.direction)}</div><div class="${p.realtime?'tram-realtime':'tram-theoretical'}">${p.realtime?'● temps réel':'○ théorique'}</div></div></div><div><div class="tram-minutes ${cls}">${esc(lbl)}</div><div class="tram-time-label">${esc(p.time)}</div></div></div>`;
+          }).join('')
+        : `<div class="tram-empty">Aucun passage dans l'heure</div>`;
+      const sep=si>0?'<hr class="tram-stop-sep">':'';
+      return`${sep}<div class="tram-stop-block"><p class="tram-stop-name">${esc(stop)}</p>${rows}</div>`;
     }).join('');
   }catch{
     dot.classList.add('error');
     container.innerHTML=`<p class="loading">Erreur de connexion</p>`;
   }
 }
+async function refreshTram(){
+  const btn=document.getElementById('tram-refresh-btn');
+  btn.classList.add('spinning');
+  await loadTram();
+  btn.classList.remove('spinning');
+}
 loadTram(); setInterval(loadTram,30000);
 
 // ── Actualités ────────────────────────────────────────
-async function loadNews(){
+let _newsTs=0; // timestamp du dernier chargement
+async function loadNews(force=false){
+  const dot=document.getElementById('news-status');
+  const badge=document.getElementById('news-cache-badge');
   try{
     const arts=await(await fetch('/api/news')).json();
     if(!arts.length){document.getElementById('news-feed').innerHTML=`<p class="loading">Aucun article récent</p>`;return;}
-    document.getElementById('news-status').classList.remove('off');
-    document.getElementById('news-feed').innerHTML=arts.map(a=>`<a class="news-item" href="${a.link}" target="_blank" rel="noopener"><div class="news-icon">${a.icon}</div><div class="news-content"><div class="news-source-row"><span class="news-source">${a.source}</span><span class="news-time">${a.time}</span></div><div class="news-title">${a.title}</div><div class="news-summary">${a.summary}</div></div></a>`).join('');
-  }catch{}
+    dot.classList.remove('off');
+    const now=Date.now();
+    // Affiche le badge "cache" si les données ont plus de 5 min
+    const oldest=arts.find(a=>a.time&&a.time.includes('j'))||null;
+    badge.style.display='';
+    badge.textContent='cache ';
+    _newsTs=now;
+    document.getElementById('news-feed').innerHTML=arts.map(a=>`<a class="news-item" href="${a.link}" target="_blank" rel="noopener"><div class="news-icon">${a.icon}</div><div class="news-content"><div class="news-source-row"><span class="news-source">${esc(a.source)}</span><span class="news-time">${a.time}</span></div><div class="news-title">${esc(a.title)}</div><div class="news-summary">${esc(a.summary)}</div></div></a>`).join('');
+  }catch{dot.classList.add('error');}
 }
-loadNews(); setInterval(loadNews,120000);
+async function refreshNews(){
+  const btn=document.getElementById('news-refresh-btn');
+  btn.classList.add('spinning');
+  await loadNews(true);
+  btn.classList.remove('spinning');
+}
+loadNews(); setInterval(loadNews,900000); // aligne sur le cache serveur 15min
 
 // ── Calendrier ────────────────────────────────────────
-async function loadCalendar(){try{renderCal(await(await fetch('/api/events')).json());}catch{renderCal([]);}}
+let _allEvents=[];
+let _calExpanded=false;
+async function loadCalendar(){try{_allEvents=await(await fetch('/api/events')).json();renderCal(_allEvents);}catch{renderCal([]);}}
 function renderCal(evts){
   const now=new Date();
+  const shown=_calExpanded?evts:evts.slice(0,5);
   let h=`<div class="cal-events-title">À venir</div>`;
-  h+=evts.length?evts.slice(0,5).map(e=>`<div class="cal-event-item"><div class="cal-event-dot"></div><div style="flex:1"><div class="cal-event-title">${e.title}</div><div class="cal-event-time">${e.date}</div></div><button class="cal-event-del" onclick="delEvt('${e.id}')">×</button></div>`).join(''):`<p class="loading">Aucun événement</p>`;
+  h+=shown.length
+    ? shown.map(e=>`<div class="cal-event-item"><div class="cal-event-dot"></div><div style="flex:1"><div class="cal-event-title">${esc(e.title)}</div><div class="cal-event-time">${e.date}</div></div><button class="cal-event-del" onclick="delEvt('${e.id}')">×</button></div>`).join('')
+    : `<p class="loading">Aucun événement</p>`;
+  // FIX: "Voir plus" si > 5 events (API renvoie jusqu'à 8)
+  if(evts.length>5){
+    h+=_calExpanded
+      ? `<button class="cal-more" onclick="_calExpanded=false;renderCal(_allEvents)">▲ Voir moins</button>`
+      : `<button class="cal-more" onclick="_calExpanded=true;renderCal(_allEvents)">▼ Voir les ${evts.length-5} autres…</button>`;
+  }
   const mon=new Date(now); mon.setDate(now.getDate()-((now.getDay()+6)%7));
   h+=`<hr class="cal-divider"><div class="cal-week-title">Cette semaine</div><div class="cal-week-grid">`;
   ['Lu','Ma','Me','Je','Ve','Sa','Di'].forEach(d=>h+=`<div class="cal-week-day-name">${d}</div>`);
@@ -668,7 +758,7 @@ async function saveTodos(){await fetch('/api/todos',{method:'POST',headers:{'Con
 function renderTodos(){
   const r=todos.filter(t=>!t.done).length;
   document.getElementById('todo-count').textContent=todos.length===0?'':r===0?'✓ Tout fait':`${r} restante${r>1?'s':''}`;
-  document.getElementById('todo-list').innerHTML=todos.map((t,i)=>`<div class="todo-item ${t.done?'done':''}" onclick="toggleTodo(${i})"><div class="todo-checkbox"></div><span class="todo-text">${t.text}</span><span class="todo-delete" onclick="delTodo(event,${i})">×</span></div>`).join('');
+  document.getElementById('todo-list').innerHTML=todos.map((t,i)=>`<div class="todo-item ${t.done?'done':''}" onclick="toggleTodo(${i})"><div class="todo-checkbox"></div><span class="todo-text">${esc(t.text)}</span><span class="todo-delete" onclick="delTodo(event,${i})">×</span></div>`).join('');
 }
 function addTodo(){const inp=document.getElementById('todo-input'),txt=inp.value.trim();if(!txt)return;todos.push({text:txt,done:false});inp.value='';saveTodos();renderTodos();}
 function toggleTodo(i){todos[i].done=!todos[i].done;saveTodos();renderTodos();}
